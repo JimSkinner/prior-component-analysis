@@ -24,7 +24,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     K     = covar.fn(beta)
   }
 
-  # if ( # TODO: Check type of K is Matrix
+  # TODO: Handle regular matrix case (cast to the correct Matrix)
+  stopifnot(is(K, "Matrix"))
+  stopifnot(isSymmetric(K))
 
   if (warnDiag & Matrix::isDiagonal(K)) warning(paste("The covariance matrix",
     "constructed from covar.fun with parameters beta.init is diagonal. This",
@@ -63,13 +65,12 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
 
     # Update W
     W.tilde = vapply(1:k, function(i_) { # TODO: Can make this faster using R_K
-      solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
-      #solve.spam(K + sigSq*vvsuminv.eig$values[i_]*diag.spam(d), C.tilde[,i_])
+      Matrix::solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
     }, numeric(d))
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
     restricted.beta = FALSE
-    if (!all(is.na(beta.init))) {
+    if (length(beta.init)!=0) {
       # covar.fn has hyperparameters to tune
       min.f <- function(beta_) {
         K_ = covar.fn(beta_)
@@ -94,7 +95,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
       K        = covar.fn(beta)
     }
 
-    lpNew  = ppca.log_posterior(X, K, W, sigSq, tune.beta)
+    lpNew  = prca.log_posterior(X, K, W, sigSq)
 
     ## Convergence criteria & printouts if trace > 0
     if (trace>1 && (iteration%%report_iter)==0) {
@@ -128,9 +129,6 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     "optimum value of beta lies in a region that cannot be dealt with",
     "numerically."))
 
-  lp1 = ppca.log_posterior(X, K, W, sigSq, tune.beta)
-  ll1  = ppca.log_likelihood(X, W, sigSq)
-
   ## Remove nonidentifiability VW^T = (VR)(WR)^T by setting R=I
   W.svd = svd(W)
   W     = W.svd$u %*% diag(W.svd$d, nrow=k, ncol=k)
@@ -148,11 +146,11 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
               Vvar  = E_V2,
               lp    = lp,
               lps   = lps,
-              ll    = ppca.log_likelihood(X, W, sigSq),
+              ll    = prca.log_likelihood(X, W, sigSq),
               beta  = beta))
 }
 
-ppca.log_likelihood <- function(X, W, sigSq) {
+prca.log_likelihood <- function(X, W, sigSq) {
   d = nrow(W)
   k = ncol(W)
   n = nrow(X)
@@ -167,7 +165,7 @@ ppca.log_likelihood <- function(X, W, sigSq) {
   return(lla + llb + llc)
 }
 
-ppca.log_prior <- function(K, W) {
+prca.log_prior <- function(K, W) {
   d = nrow(W)
   k = ncol(W)
 
@@ -177,14 +175,6 @@ ppca.log_prior <- function(K, W) {
                 norm(solve(t(K_chol), W), type='F')^2))
 }
 
-ppca.log_posterior <- function(X, K, W, sigSq, tune.beta) {
-  return(ppca.log_likelihood(X, W, sigSq) +
-         ifelse(tune.beta, ppca.log_prior(K, W), 0))
-}
-
-MR.cov <- function(X, l) {
-  if (all(l==0)) return(diag.spam(nrow(X)))
-  R = cleanup(spind2spam(fields.rdist.near(X%*%diag(1/l), delta=1, max.points=0.05*nrow(X)^2)))
-  K = sigma0*((2+cos(2*pi*R))*(1-R)/3 + sin(2*pi*R)/(2*pi)) + diag.spam(nrow(X))
-  return(as.dgCMatrix.spam(K))
+prca.log_posterior <- function(X, K, W, sigSq) {
+  return(prca.log_likelihood(X, W, sigSq) + prca.log_prior(K, W));
 }
