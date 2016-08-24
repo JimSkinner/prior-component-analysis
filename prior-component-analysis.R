@@ -139,6 +139,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   #W = W %*% P
   #E_V1 = E_V1 %*% P
 
+  dof = d*k - 0.5*k*(k-1) + 3 + length(beta.init) # Degrees of Freedom for PPCA
+  bic = -2*lp + dof*log(n)
+
   return(list(W     = W,
               sigSq = sigSq,
               mu    = attr(X, "scaled:center"),
@@ -146,7 +149,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
               Vvar  = E_V2,
               lp    = lp,
               lps   = lps,
-              ll    = prca.log_likelihood(X, W, sigSq),
+              bic   = bic,
               beta  = beta))
 }
 
