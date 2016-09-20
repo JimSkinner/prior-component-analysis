@@ -28,9 +28,11 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     K     = covar.fn(beta)
   }
 
-  # Test for ill conditioning
-  if (condest(K)$est > 10^4.5) {
-    stop("The covariance matrix constructed with the covariance function and starting parameters provided is ill-conditioned. The first iteration requires a well-conditioned covariance matrix.")
+  # Test for ill conditioning. Need well conditioned matrix if we are HP tuning.
+  if (length(beta.init)>0 && condest(K)$est > 10^4.5) {
+    stop(paste("The covariance matrix constructed with the covariance function",
+      "and starting parameters provided is ill-conditioned. The first",
+      "iteration requires a well-conditioned covariance matrix."))
   }
 
   # TODO: Handle regular matrix case (cast to the correct Matrix)
@@ -89,11 +91,11 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
                + norm(solve(t(K_chol), W), type='F')^2)
       }
 
-      browser()
       beta.opt = suppressWarnings(optimx(par=beta, fn=min.f, method=c("Nelder-Mead"),
                                          itnmax=5, control=list(trace=0, kkt=FALSE,
                                                                 starttests=FALSE)))
-      beta     = beta.opt[,1:length(beta)]
+      beta     = as.numeric(coef(beta.opt)[1,])
+
       K        = covar.fn(beta)
     }
 
