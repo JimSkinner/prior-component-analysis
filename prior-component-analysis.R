@@ -15,6 +15,10 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   #W     = svd.X$v[,1:k,drop=FALSE] # TODO: Which init is better?
   sigSq = mean(svd.X$d[-(1:k)]^2)
 
+  if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
+    "dimensionality equal to or lower than the k provided; prca may fail due",
+    "to producing a degenerate probability model.")}
+
   if (trace==1) print(paste("Starting prca with", length(beta), "hyperparameters"))
   if (length(beta.init)==0) {
     # covar.fn has no hyperparameters
@@ -22,6 +26,11 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   } else {
     beta  = beta.init
     K     = covar.fn(beta)
+  }
+
+  # Test for ill conditioning
+  if (condest(K)$est > 10^4.5) {
+    stop("The covariance matrix constructed with the covariance function and starting parameters provided is ill-conditioned. The first iteration requires a well-conditioned covariance matrix.")
   }
 
   # TODO: Handle regular matrix case (cast to the correct Matrix)
@@ -42,11 +51,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     WtW = crossprod(W)
 
     ## Expectation Step
-    tryCatch({
     Minv = chol2inv(chol(WtW + sigSq*diag(k)))
     E_V1 = X %*% W %*% Minv
     E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
-    }, error=function(msg) {browser()})
 
     ## Maximization step
     vvsuminv = chol2inv(chol(Reduce('+', E_V2)))
@@ -70,24 +77,19 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
     restricted.beta = FALSE
-    if (length(beta.init)!=0) {
-      # covar.fn has hyperparameters to tune
+    if (length(beta.init)!=0) { # covar.fn has hyperparameters to tune
       min.f <- function(beta_) {
         K_ = covar.fn(beta_)
-
-        error = tryCatch({
-          K_chol = Matrix::chol(K_, pivot=FALSE); FALSE
-        }, error   = function(msg) TRUE, # If K is poorly conditioned, set `error'
-           warning = function(msg) TRUE  # to TRUE, and return +Inf.
-        )
-        if (error) {
-          restricted.beta = TRUE
-          return(Inf) # Too poorly conditioned to perform reliable chol
-        }
+        K_cond = condest(K_)$est
+        if (K_cond > 10^4.5) {return(Inf)} # Too ill conditioned to work with
+        K_chol = tryCatch({
+          Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
+        }, error = function(err) browser()) # TODO: Keep the TryCatch just in case
         return(2*k*sum(log(diag(K_chol)))
                + norm(solve(t(K_chol), W), type='F')^2)
       }
 
+      browser()
       beta.opt = suppressWarnings(optimx(par=beta, fn=min.f, method=c("Nelder-Mead"),
                                          itnmax=5, control=list(trace=0, kkt=FALSE,
                                                                 starttests=FALSE)))
