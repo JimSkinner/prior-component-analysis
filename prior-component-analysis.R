@@ -42,7 +42,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   if (warnDiag & Matrix::isDiagonal(K)) warning(paste("The covariance matrix",
     "constructed from covar.fun with parameters beta.init is diagonal. This",
     "can sometimes cause beta optimisation to get stuck. If all inputs are",
-    "truly independant, this may not be a good technique to use."))
+    "truly independent, this may not be a good technique to use."))
 
   lp  = -Inf # Log likelihood
   lps = numeric(maxit)
@@ -80,15 +80,23 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
 
     restricted.beta = FALSE
     if (length(beta.init)!=0) { # covar.fn has hyperparameters to tune
+      # The part of the expected log likelihood with varies with beta
       min.f <- function(beta_) {
         K_ = covar.fn(beta_)
-        K_cond = condest(K_)$est
-        if (K_cond > 10^4.5) {return(Inf)} # Too ill conditioned to work with
-        K_chol = tryCatch({
-          Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
-        }, error = function(err) browser()) # TODO: Keep the TryCatch just in case
-        return(2*k*sum(log(diag(K_chol)))
-               + norm(solve(t(K_chol), W), type='F')^2)
+
+        success = tryCatch({
+          K_chol = Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
+          TRUE
+        }, error = function(err) {
+          FALSE
+        })
+
+        if (success) {
+          return(2*k*sum(log(diag(K_chol)))
+                 + norm(solve(t(K_chol), W), type='F')^2)
+        } else {
+          return(Inf)
+        }
       }
 
       beta.opt = suppressWarnings(optimx(par=beta, fn=min.f, method=c("Nelder-Mead"),
@@ -146,7 +154,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   dof = d*k - 0.5*k*(k-1) + 3 + length(beta.init) # Degrees of Freedom for PPCA
   bic = -2*lp + dof*log(n)
 
-  return(list(W     = W,
+  prcaObj = list(W     = W,
               sigSq = sigSq,
               mu    = attr(X, "scaled:center"),
               V     = E_V1,
@@ -154,7 +162,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
               lp    = lp,
               lps   = lps,
               bic   = bic,
-              beta  = beta))
+              beta  = beta)
+  class(prcaObj) = "prca"
+  return(prcaObj)
 }
 
 prca.log_likelihood <- function(X, W, sigSq) {
@@ -184,4 +194,23 @@ prca.log_prior <- function(K, W) {
 
 prca.log_posterior <- function(X, K, W, sigSq) {
   return(prca.log_likelihood(X, W, sigSq) + prca.log_prior(K, W));
+}
+
+predict.prca <- function(prcaObj, samples) {
+  if (missing(samples)) {
+    return(prcaObj$V)
+  }
+
+  stopifnot(is.matrix(samples))
+
+  k     = ncol(prcaObj$W) # Latent dimensionality
+  muMat = matrix(rep(prcaObj$mu, nrow(samples)), nrow=nrow(samples), byrow=TRUE)
+
+  # Latent representation of new samples
+  Mchol  = chol(crossprod(prcaObj$W) + prcaObj$sigSq*diag(k))
+  latent = t(backsolve(Mchol, forwardsolve(t(Mchol), t((samples-muMat)%*%prcaObj$W))))
+
+  # 'samples' projected onto PrCA model
+  proj = tcrossprod(latent, prcaObj$W) + muMat
+  return(proj)
 }
