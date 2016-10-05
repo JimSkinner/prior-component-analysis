@@ -17,7 +17,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
 
   if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
     "dimensionality equal to or lower than the k provided; prca may fail due",
-    "to producing a degenerate probability model.")}
+    "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
   if (trace==1) print(paste("Starting prca with", length(beta), "hyperparameters"))
   if (length(beta.init)==0) {
