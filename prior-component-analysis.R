@@ -58,10 +58,12 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
     ## Maximization step
-    vvsuminv = chol2inv(chol(Reduce('+', E_V2)))
-    xvsum    = Reduce('+', lapply(1:n, function(i_) tcrossprod(X[i_,], E_V1[i_,])))
-    vvsuminv.eig = eigen(vvsuminv, symmetric=TRUE)
-    C.tilde  = K %*% xvsum %*% vvsuminv %*% vvsuminv.eig$vectors
+    xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(X[i_,], E_V1[i_,])))
+    vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
+    vvsuminv.eig = list(values=rev(1/vvsum.eig$values),
+                        vectors=vvsum.eig$vectors[,k:1])
+
+    C.tilde  = K %*% xvsum %*% vvsuminv.eig$vectors %*% diag(vvsuminv.eig$values, ncol=k, nrow=k)
 
     # Update sigSq
     sigSq = (
