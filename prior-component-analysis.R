@@ -19,7 +19,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     "dimensionality equal to or lower than the k provided; prca may fail due",
     "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
-  if (trace==1) print(paste("Starting prca with", length(beta), "hyperparameters"))
+  if (trace>=1) print(paste("Starting prca with", length(beta), "hyperparameters"))
   if (length(beta.init)==0) {
     # covar.fn has no hyperparameters
     K = covar.fn()
@@ -47,42 +47,81 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   lp  = -Inf # Log likelihood
   lps = numeric(maxit)
 
+  logPost = -Inf
+
   converged = FALSE
   iteration = 0
   while (!converged) {
-    WtW = crossprod(W)
-
     ## Expectation Step
+    WtW = crossprod(W)
     Minv = chol2inv(chol(WtW + sigSq*diag(k)))
     E_V1 = X %*% W %*% Minv
     E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
     ## Maximization step
+    # Update sigSq
+    #sigSqOld = (
+    #  norm(X, 'F')^2 -
+    #  sum(vapply(1:n, function(n_) {
+    #    2*E_V1[n_,] %*% t(W) %*% X[n_,] -
+    #    sum(vapply(1:k, function(i_) E_V2[[n_]][i_,] %*% WtW[i_,], numeric(1)))
+    #  }, numeric(1)))
+    #)/(n*d)
+
+    E_V2sum = Reduce('+', E_V2)
+
+    Q <- function(sigSq_) {
+      -0.5*( n*d*log(sigSq_) + sum(diag(E_V2sum)) +
+        ( norm(X, type='F')^2 -
+          2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% X[n_,], numeric(1))) +
+          sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1)))
+        )/sigSq_)
+    }
+
+    sigSq2 = sigSq
+
+    sigSq = (norm(X, 'F')^2 -
+             2*sum(sapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% X[n_,])) +
+             sum(sapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,])))/(n*d)
+
+    print(sigSq)
+
+    newLogPost = prca.log_posterior(X, K, W, sigSq)
+    cat("EM", iteration, "a: ", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
+
+    #browser()
+    logPost = newLogPost
+
+    ## Expectation Step 2
+    WtW = crossprod(W)
+    Minv = chol2inv(chol(WtW + sigSq*diag(k)))
+    E_V1 = X %*% W %*% Minv
+    E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
+
+    # Update W
     xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(X[i_,], E_V1[i_,])))
     vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
     vvsuminv.eig = list(values=rev(1/vvsum.eig$values),
                         vectors=vvsum.eig$vectors[,k:1])
-
     C.tilde  = K %*% xvsum %*% vvsuminv.eig$vectors %*% diag(vvsuminv.eig$values, ncol=k, nrow=k)
-
-    # Update sigSq
-    sigSq = (
-      norm(X, 'F')^2 -
-      sum(vapply(1:n, function(n_) {
-        2*E_V1[n_,] %*% t(W) %*% X[n_,] -
-        sum(vapply(1:k, function(i_) E_V2[[n_]][i_,] %*% WtW[i_,], numeric(1)))
-      }, numeric(1)))
-    )/(n*d)
-
-    # Update W
     W.tilde = vapply(1:k, function(i_) { # TODO: Can make this faster using R_K
       Matrix::solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
     }, numeric(d))
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
-    restricted.beta = FALSE
+    newLogPost = prca.log_posterior(X, K, W, sigSq)
+    cat("EM", iteration, "b: ", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
+    logPost = newLogPost
+
     if (length(beta.init)!=0) { # covar.fn has hyperparameters to tune
       # The part of the expected log likelihood with varies with beta
+
+      ## Expectation Step 3
+      WtW = crossprod(W)
+      Minv = chol2inv(chol(WtW + sigSq*diag(k)))
+      E_V1 = X %*% W %*% Minv
+      E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
+
       min.f <- function(beta_) {
         K_ = covar.fn(beta_)
 
@@ -102,11 +141,15 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
       }
 
       beta.opt = suppressWarnings(optimx(par=beta, fn=min.f, method=c("Nelder-Mead"),
-                                         itnmax=5, control=list(trace=0, kkt=FALSE,
-                                                                starttests=FALSE)))
+                                         control=list(trace=0, kkt=FALSE, reltol=1e-5,
+                                                      starttests=FALSE, maxit=50)))
       beta     = as.numeric(coef(beta.opt)[1,])
-
       K        = covar.fn(beta)
+
+      newLogPost = prca.log_posterior(X, K, W, sigSq)
+      cat("EM", iteration, "c: ", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
+      logPost = newLogPost
+      #browser()
     }
 
     lpNew  = prca.log_posterior(X, K, W, sigSq)
@@ -114,7 +157,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     ## Convergence criteria & printouts if trace > 0
     if (trace>1 && (iteration%%report_iter)==0) {
       print(paste("Iteration ", iteration, ": log likelihood = ",
-                  round(lpNew, 4), " (delta=", round(lpNew-lp, 4),")", sep=''))
+                  round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
     }
 
     if ((lpNew - lp < tol) & (lpNew > lp)) {
@@ -137,11 +180,6 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   if (iteration < maxit) { # Trim unused lps entries
     lps = lps[1:iteration]
   }
-
-  if (restricted.beta) warning(paste("K became ill-conditioned when optimizing",
-    "beta, so the value of beta has been restricted. It is likely that the",
-    "optimum value of beta lies in a region that cannot be dealt with",
-    "numerically."))
 
   ## Remove nonidentifiability VW^T = (VR)(WR)^T by setting R=I
   W.svd = svd(W)
@@ -179,9 +217,20 @@ prca.log_likelihood <- function(X, W, sigSq) {
   # This monstrosity is an efficient calculation of the log likelihood
   lla = -0.5*n*d*log(2*pi)
   llb = -0.5*n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
-  llc = -0.5*(norm(X, 'F')^2 - sum(W.sv^2/(W.sv^2 + sigSq)))/(sigSq*n)
+  #llc = -0.5*(norm(X, 'F')^2 - sum(W.sv^2/(W.sv^2 + sigSq)))/(sigSq*n)
 
-  return(lla + llb + llc)
+  R = chol(crossprod(W) + diag(k))
+  llc2 = -0.5*((norm(X, 'F')^2)/sigSq +
+               (norm(forwardsolve(t(R), t(W)%*%t(X)), 'F')^2)/(sigSq^2))
+
+  #ll2 = sum(vapply(1:n, function(i_) dmvnorm(X[i_,], sigma=tcrossprod(W) + sigSq*diag(d), log=TRUE), numeric(1)))
+
+  #print("*********************")
+  #print("Log lik diff:")
+  #print(llc - llc2)
+  #print("*********************")
+
+  return(lla + llb + llc2)
 }
 
 prca.log_prior <- function(K, W) {
