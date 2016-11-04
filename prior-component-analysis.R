@@ -21,7 +21,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   covar.svd = svd(sqrt(n)*X, nu=0, nv=k)
   covar.eigval = covar.svd$d^2
   sigSq = mean(covar.eigval[-(1:k)])
-  W     = svd.X$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
+  W     = covar.svd$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
 
   if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
     "dimensionality equal to or lower than the k provided; prca may fail due",
@@ -85,6 +85,11 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     E_V1 = X %*% W %*% Minv
     E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
+    if (all(WtW==0)) {
+      stop(paste("SPCA has failed due to numerical instability. Try dividing X",
+        "by it's largest singular value to improve numerical stability"))
+    }
+
     # Maximization step for W
     xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(X[i_,], E_V1[i_,])))
     vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
@@ -95,13 +100,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     # TODO: Squash this bug:
     # Error in vapply(1:k, function(i_) { : values must be length 3258,
     # but FUN(X[[1]]) result is length 0
-    tryCatch({
-
     W.tilde = vapply(1:k, function(i_) { # TODO: Can make this faster using R_K
       Matrix::solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
     }, numeric(d))
-
-    }, error=function(msg) browser())
 
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
