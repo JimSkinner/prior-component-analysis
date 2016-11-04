@@ -3,7 +3,7 @@ library(Matrix)
 library(optimx)
 
 prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
-                 report_iter=10, warnDiag=TRUE) {
+                 report_iter=10, warnDiag=TRUE, beta.optimx.control=list()) {
   stopifnot(ncol(X) >= k)
 
   X = scale(X, scale=FALSE) # Centered data: nxd
@@ -14,6 +14,12 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   W     = svd.X$v[,1:k,drop=FALSE] %*% diag(svd.X$d[1:k], ncol=k, nrow=k)
   #W     = svd.X$v[,1:k,drop=FALSE] # TODO: Which init is better?
   sigSq = mean(svd.X$d[-(1:k)]^2)
+  # Define a few defaults for the optimx routine in optimizing beta, and
+  # overwrite them with any values specified by the user.
+  overwrite = beta.optimx.control
+  beta.optimx.control = list(trace=0, kkt=FALSE, reltol=1e-5, starttests=FALSE,
+                             maxit=500)
+  beta.optimx.control[names(overwrite)] = overwrite
 
   if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
     "dimensionality equal to or lower than the k provided; prca may fail due",
@@ -131,9 +137,9 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
       }
 
       # TODO: Relative tolerance = relatice change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      beta.opt = suppressWarnings(optimx(par=beta, fn=min.f, method=c("Nelder-Mead"),
-                                         control=list(trace=0, kkt=FALSE, reltol=1e-5,
-                                                      starttests=FALSE, maxit=500)))
+      beta.opt = suppressWarnings(optimx(par=beta, fn=min.f,
+        method=c("Nelder-Mead"), control=beta.optimx.control))
+
       beta     = as.numeric(coef(beta.opt)[1,])
       K        = covar.fn(beta)
 
