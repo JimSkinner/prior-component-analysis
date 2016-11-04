@@ -10,16 +10,18 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   n = nrow(X)               # number of samples
   d = ncol(X)               # original dimensionality
 
-  svd.X = svd(X)
-  W     = svd.X$v[,1:k,drop=FALSE] %*% diag(svd.X$d[1:k], ncol=k, nrow=k)
-  #W     = svd.X$v[,1:k,drop=FALSE] # TODO: Which init is better?
-  sigSq = mean(svd.X$d[-(1:k)]^2)
   # Define a few defaults for the optimx routine in optimizing beta, and
   # overwrite them with any values specified by the user.
   overwrite = beta.optimx.control
   beta.optimx.control = list(trace=0, kkt=FALSE, reltol=1e-5, starttests=FALSE,
                              maxit=500)
   beta.optimx.control[names(overwrite)] = overwrite
+
+  # Initialize W and sigma^2 from PPCA
+  covar.svd = svd(sqrt(n)*X, nu=0, nv=k)
+  covar.eigval = covar.svd$d^2
+  sigSq = mean(covar.eigval[-(1:k)])
+  W     = svd.X$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
 
   if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
     "dimensionality equal to or lower than the k provided; prca may fail due",
@@ -53,7 +55,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   lp  = -Inf # Log likelihood
   lps = numeric(maxit)
 
-  logPost = -Inf
+  if (trace >=2) {logPost = prca.log_posterior(X, K, W, sigSq)}
 
   converged = FALSE
   iteration = 0
