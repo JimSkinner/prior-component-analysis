@@ -18,7 +18,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   beta.optimx.control[names(overwrite)] = overwrite
 
   # Initialize W and sigma^2 from PPCA
-  covar.svd = svd(sqrt(n)*X, nu=0, nv=k)
+  covar.svd = svd(X/sqrt(n), nu=0, nv=k) # Should be DIVIDED by sqrt(n)?
   covar.eigval = covar.svd$d^2
   sigSq = mean(covar.eigval[-(1:k)])
   W     = covar.svd$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
@@ -27,24 +27,24 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     "dimensionality equal to or lower than the k provided; prca may fail due",
     "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
-  if (trace>=1) print(paste("Starting prca with", length(beta), "hyperparameters"))
-  if (length(beta.init)==0) {
-    # covar.fn has no hyperparameters
-    K = covar.fn()
-  } else {
-    beta  = beta.init
-    K     = covar.fn(beta)
-  }
+  if (trace>=1) print(paste("Starting prca with", length(beta.init), "hyperparameters"))
 
-  # Test for ill conditioning. Need well conditioned matrix if we are HP tuning.
-  if (length(beta.init)>0 && condest(K)$est > 10^4.5) {
+  tryCatch({
+    if (length(beta.init)==0) {
+      # covar.fn has no hyperparameters
+      K = covar.fn()
+    } else {
+      beta  = beta.init
+      K     = covar.fn(beta)
+    }
+  }, error = function(msg) { # TODO: This error msg will not get called bc I am not inverting K!
     stop(paste("The covariance matrix constructed with the covariance function",
       "and starting parameters provided is ill-conditioned. The first",
       "iteration requires a well-conditioned covariance matrix."))
-  }
+  })
 
   # TODO: Handle regular matrix case (cast to the correct Matrix)
-  stopifnot(is(K, "Matrix"))
+  stopifnot(is(K, "Matrix") | is(K, "matrix"))
   stopifnot(isSymmetric(K))
 
   if (warnDiag & Matrix::isDiagonal(K)) warning(paste("The covariance matrix",
@@ -52,10 +52,10 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     "can sometimes cause beta optimisation to get stuck. If all inputs are",
     "truly independent, this may not be a good technique to use."))
 
-  lp  = -Inf # Log likelihood
+  lp  = prca.log_posterior(X, K, W, sigSq) # Log posterior
   lps = numeric(maxit)
 
-  if (trace >=2) {logPost = prca.log_posterior(X, K, W, sigSq)}
+  if (trace >=2) {logPost = lp}
 
   converged = FALSE
   iteration = 0
