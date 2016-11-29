@@ -97,9 +97,6 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
                         vectors=vvsum.eig$vectors[,k:1])
     C.tilde  = K %*% xvsum %*% vvsuminv.eig$vectors %*% diag(vvsuminv.eig$values, ncol=k, nrow=k)
 
-    # TODO: Squash this bug:
-    # Error in vapply(1:k, function(i_) { : values must be length 3258,
-    # but FUN(X[[1]]) result is length 0
     W.tilde = vapply(1:k, function(i_) { # TODO: Can make this faster using R_K
       Matrix::solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
     }, numeric(d))
