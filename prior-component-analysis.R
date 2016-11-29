@@ -113,7 +113,6 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     }
 
     if (length(beta.init)!=0) { # covar.fn has hyperparameters to tune
-      # The part of the expected log likelihood with varies with beta
 
       ## Expectation Step 3
       WtW = crossprod(W)
@@ -121,17 +120,24 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
       E_V1 = X %*% W %*% Minv
       E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
+      # The part of the expected log likelihood with varies with beta
       min.f <- function(beta_) {
         K_ = covar.fn(beta_)
 
         success = tryCatch({
-          K_chol = Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
+          #K_chol = Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
+          # Convert to spam and back because the Matrix chol has a memory leak
+          # when an ill conditioned matrix is supplied.
+          K_chol = chol.spam(as.spam.dgCMatrix(K_), pivot=FALSE) # Pivot?
           TRUE
         }, error = function(err) {
           FALSE
+        #}, warning = function(msg) {
+        #  FALSE
         })
 
         if (success) {
+          K_chol = as.dgCMatrix.spam(as.spam(K_chol))
           return(2*k*sum(log(diag(K_chol)))
                  + norm(solve(t(K_chol), W), type='F')^2)
         } else {
@@ -230,7 +236,8 @@ prca.log_prior <- function(K, W) {
   d = nrow(W)
   k = ncol(W)
 
-  K_chol = Matrix::chol(K, pivot=FALSE)
+  K_chol = as.dgCMatrix.spam(as.spam(chol.spam(as.spam.dgCMatrix(K), pivot=FALSE)))
+  #K_chol = Matrix::chol(K, pivot=FALSE)
   return(-0.5*( d*k*log(2*pi) +
                 2*k*sum(log(diag(K_chol))) +
                 norm(solve(t(K_chol), W), type='F')^2))
