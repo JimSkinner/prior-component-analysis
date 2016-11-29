@@ -146,8 +146,8 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
       }
 
       # TODO: Relative tolerance = relatice change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      beta.opt = suppressWarnings(optimx(par=beta, fn=min.f,
-        method=c("Nelder-Mead"), control=beta.optimx.control))
+      beta.opt = optimx(par=beta, fn=min.f,
+        method=c("L-BFGS-B"), control=beta.optimx.control)
 
       beta     = as.numeric(coef(beta.opt)[1,])
       K        = covar.fn(beta)
