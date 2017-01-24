@@ -2,6 +2,7 @@ library(MASS)
 library(fields)
 library(Matrix)
 library(spam)
+library(functional)
 
 synthesize_data_kern <- function(n, k, dim, lenScale=rep(1, length(dim)), noisesd=0, kern=Curry(Exp.cov, p=2)) {
   grid = make.surface.grid(lapply(dim, function(d_) seq(0, 1, length=d_)))
