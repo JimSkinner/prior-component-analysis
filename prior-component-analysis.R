@@ -1,24 +1,30 @@
-library(functional)
 library(Matrix)
 library(optimx)
+library(ucminf)
 
-prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
-                 report_iter=10, warnDiag=TRUE, beta.optimx.control=list()) {
-  stopifnot(ncol(X) >= k)
+source("util.R")
 
-  X = scale(X, scale=FALSE) # Centered data: nxd
-  n = nrow(X)               # number of samples
-  d = ncol(X)               # original dimensionality
+prca <- function(X, k, locations, covar.fn, covar.fn.d, beta0=c(),
+                 trace=0, report_iter=10, max.dist=Inf,
+                 maxit=10, tol=1e-2, ucminf.control=list()) {
+
+  ## Define commonly used variables.
+  #X = scale(X, scale=FALSE) # Centered data: nxd
+  n = nrow(X)               # Number of samples
+  d = ncol(X)               # Original dimensionality
+
+  ## Perform sanity checks.
+  stopifnot(ncol(X) >= k) # Cannot deal with complete/overcomplete case
+  stopifnot(nrow(X) >= k) # TODO: Check if I can actually deal witht his and if I can change to an equality
 
   # Define a few defaults for the optimx routine in optimizing beta, and
   # overwrite them with any values specified by the user.
-  overwrite = beta.optimx.control
-  beta.optimx.control = list(trace=0, kkt=FALSE, reltol=1e-5, starttests=FALSE,
-                             maxit=500)
-  beta.optimx.control[names(overwrite)] = overwrite
+  overwrite = ucminf.control
+  ucminf.control = list(trace=0, grtol=1e-3, xtol=1e-4, maxeval=20)
+  ucminf.control[names(overwrite)] = overwrite
 
-  # Initialize W and sigma^2 from PPCA
-  covar.svd = svd(X/sqrt(n), nu=0, nv=k) # Should be DIVIDED by sqrt(n)?
+  ## Initialize W and sigma^2 from PPCA
+  covar.svd = svd(X/sqrt(n), nu=0, nv=k)
   covar.eigval = covar.svd$d^2
   sigSq = mean(covar.eigval[-(1:k)])
   W     = covar.svd$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
@@ -27,39 +33,23 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
     "dimensionality equal to or lower than the k provided; prca may fail due",
     "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
-  if (trace>=1) print(paste("Starting prca with", length(beta.init), "hyperparameters"))
+  if (trace>=1) {print(paste("Starting prca with", length(beta0), "hyperparameters"))}
 
-  tryCatch({
-    if (length(beta.init)==0) {
-      # covar.fn has no hyperparameters
-      K = covar.fn()
-    } else {
-      beta  = beta.init
-      K     = covar.fn(beta)
-    }
-  }, error = function(msg) { # TODO: This error msg will not get called bc I am not inverting K!
-    stop(paste("The covariance matrix constructed with the covariance function",
-      "and starting parameters provided is ill-conditioned. The first",
-      "iteration requires a well-conditioned covariance matrix."))
-  })
+  beta = beta0
+  D    = distanceMatrix(locations, max.dist=max.dist)
+  K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
+  stopifnot(is(K, "Matrix"))
 
-  # TODO: Handle regular matrix case (cast to the correct Matrix)
-  stopifnot(is(K, "Matrix") | is(K, "matrix"))
-  stopifnot(isSymmetric(K))
-
-  if (warnDiag & Matrix::isDiagonal(K)) warning(paste("The covariance matrix",
-    "constructed from covar.fun with parameters beta.init is diagonal. This",
-    "can sometimes cause beta optimisation to get stuck. If all inputs are",
-    "truly independent, this may not be a good technique to use."))
-
-  lp  = prca.log_posterior(X, K, W, sigSq) # Log posterior
-  lps = numeric(maxit)
-
-  if (trace >=2) {logPost = lp}
+  lp   = prca.log_posterior(X, K, W, sigSq) # Current log posterior
+  lps  = numeric(maxit) # Record of log posteriors for monitoring convergence
 
   converged = FALSE
   iteration = 0
   while (!converged) {
+    ##################
+    ## EM for sigma^2
+    ##################
+
     ## Expectation Step
     WtW = crossprod(W)
     Minv = chol2inv(chol(WtW + sigSq*diag(k)))
@@ -73,107 +63,111 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
              2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% X[n_,], numeric(1))) +
              sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1))))/(n*d)
 
-    if (trace >=2) {
-      newLogPost = prca.log_posterior(X, K, W, sigSq)
-      cat("Iteration ", iteration, ", Updated sigma^2. Log Posterior=", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
-      logPost = newLogPost
-    }
+    ##################
+    ## EM for W
+    ##################
 
-    ## Expectation Step 2
+    ## Expectation Step
     WtW = crossprod(W)
+    if (all(WtW==0)) {stop(paste("SPCA has failed due to numerical instability.",
+      "Try dividing X by it's largest singular value to improve numerical",
+      "stability"))}
     Minv = chol2inv(chol(WtW + sigSq*diag(k)))
     E_V1 = X %*% W %*% Minv
     E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
-    if (all(WtW==0)) {
-      stop(paste("SPCA has failed due to numerical instability. Try dividing X",
-        "by it's largest singular value to improve numerical stability"))
-    }
-
-    # Maximization step for W
+    ## Maximization step for W
     xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(X[i_,], E_V1[i_,])))
     vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
     vvsuminv.eig = list(values=rev(1/vvsum.eig$values),
                         vectors=vvsum.eig$vectors[,k:1])
-    C.tilde  = K %*% xvsum %*% vvsuminv.eig$vectors %*% diag(vvsuminv.eig$values, ncol=k, nrow=k)
 
-    W.tilde = vapply(1:k, function(i_) { # TODO: Can make this faster using R_K
-      Matrix::solve(K + sigSq*vvsuminv.eig$values[i_]*Diagonal(d), C.tilde[,i_])@x
+    C.tilde  = (K %*% xvsum %*% vvsuminv.eig$vectors %*%
+                diag(vvsuminv.eig$values, ncol=k, nrow=k))
+
+    ## I have been unable to speed this up by doing Kc <- Cholesky(K) and
+    ## calculating each W.tilde_i with a diagonal update to Kc. Using updown
+    ## gives the correct answer but is MUCH slower and using update gives the
+    ## wrong answer.
+    W.tilde = vapply(1:k, function(i_) {
+      Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=FALSE, perm=TRUE)
+      as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A"))
     }, numeric(d))
-
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
-    if (trace >=2) {
-      newLogPost = prca.log_posterior(X, K, W, sigSq)
-      cat("Iteration ", iteration, ", Updated W. Log Posterior=", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
-      logPost = newLogPost
-    }
-
-    if (length(beta.init)!=0) { # covar.fn has hyperparameters to tune
-
-      ## Expectation Step 3
+    ##################
+    ## EM for beta
+    ##################
+    if (length(beta0) > 0) { # There are HPs to tune
+      ## Expectation Step
       WtW = crossprod(W)
       Minv = chol2inv(chol(WtW + sigSq*diag(k)))
       E_V1 = X %*% W %*% Minv
       E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
-      # The part of the expected log likelihood with varies with beta
+      # The part of the expected log likelihood which varies with beta
       min.f <- function(beta_) {
-        K_ = covar.fn(beta_)
+        K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
 
-        success = tryCatch({
-          #K_chol = Matrix::chol(K_, pivot=FALSE, cache=FALSE) # Pivot?
-          # Convert to spam and back because the Matrix chol has a memory leak
-          # when an ill conditioned matrix is supplied.
-          K_chol = chol.spam(as.spam.dgCMatrix(K_), pivot=FALSE) # Pivot?
-          TRUE
-        }, error = function(err) {
-          FALSE
-        #}, warning = function(msg) {
-        #  FALSE
-        })
+        return(-prca.log_prior(K_, W))
 
-        if (success) {
-          K_chol = as.dgCMatrix.spam(as.spam(K_chol))
-          return(2*k*sum(log(diag(K_chol)))
-                 + norm(solve(t(K_chol), W), type='F')^2)
-        } else {
-          return(Inf)
+        #tryCatch({
+        #  Kc   = Cholesky(K_, LDL=FALSE, pivot=TRUE)
+        #}, error=function(msg) browser())
+        #perm = Kc@perm + 1
+
+        #logDet    = as.numeric(Matrix::determinant(Kc, logarithm=TRUE)$modulus)*2
+        #trWtKinvW = norm(Matrix::solve(Kc, W[perm,,drop=FALSE], system='L'), 'F')^2
+        #return(k*logDet + trWtKinvW)
+
+        #Ksub   = nearPD(covar.fn(locations.sub, beta_)) #TODO: Precondition??
+        #logDet = log(sum(Ksub$eigenvalues))
+
+        #R = chol(as.matrix(Ksub$mat), permut=TRUE)
+
+        #trWtKinvW = norm(Matrix::solve(Kc, W.sub[perm,,drop=FALSE], system='L'), 'F')^2
+
+      }
+
+      min.f.d <- function(beta_) {
+        K_  = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
+        dK_ = covar.fn.d(locations, beta=beta_, D=D, max.dist=max.dist)
+
+        Kc  = Cholesky(K_, LDL=TRUE, pivot=TRUE)
+
+        deriv = numeric(length(beta_))
+        for (i in 1:length(beta_)) { # TODO: Neaten me
+          a = k * sum(diag(solve(Kc, dK_[[i]], system="A")))
+
+          b = solve(Kc, W, system="A")
+
+          c = sum(vapply(1:k, function(k_) {
+            as.numeric(b[,k_] %*% dK_[[i]] %*% b[,k_])
+          }, numeric(1)))
+
+          deriv[i] = a-c
         }
+        return(0.5*deriv)
       }
 
-      # TODO: Relative tolerance = relatice change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      beta.opt = optimx(par=beta, fn=min.f,
-        method=c("L-BFGS-B"), control=beta.optimx.control)
-
-      beta     = as.numeric(coef(beta.opt)[1,])
-      K        = covar.fn(beta)
-
-      if (trace >=2) {
-        newLogPost = prca.log_posterior(X, K, W, sigSq)
-        cat("Iteration ", iteration, ", Updated beta. Log Posterior=", round(newLogPost, 5), " (increase=", round(newLogPost-logPost, 5),")\n", sep='')
-        logPost = newLogPost
-      }
+      # TODO: Relative tolerance = relative change in LL from updating W? (Maybe lower-bounded by ~1e6)
+      beta.opt = ucminf(par=beta, fn=min.f, gr=min.f.d, control=ucminf.control)
+      beta     = beta.opt$par # ucminf
+      K        = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
     }
 
-    lpNew  = prca.log_posterior(X, K, W, sigSq)
-
+    ####################################
     ## Convergence criteria & printouts if trace > 0
-    if (trace==1 && (iteration%%report_iter)==0) {
-      print(paste("Iteration ", iteration, ": log likelihood = ",
-                  round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
-    }
-
-    if ((lpNew - lp < tol) & (lpNew > lp)) {
-      if (trace>0) {
-        print(paste("Convergence criteria reached: delta log likelihood <", tol))
-      }
-      converged=TRUE
-    } else if (iteration >= maxit) {
+    ####################################
+    lpNew = prca.log_posterior(X, K, W, sigSq)
+    if (iteration >= maxit) { # Check for maximum iterations reached. If so, print.
       if (trace>0) {
         print(paste("Convergence criteria reached:", iteration, "iterations"))
       }
       converged=TRUE
+    } else if (trace==1 && (iteration%%report_iter)==0) {
+      print(paste("Iteration ", iteration, ": log likelihood = ",
+                  round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
     }
 
     lp = lpNew
@@ -196,14 +190,16 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
   #W = W %*% P
   #E_V1 = E_V1 %*% P
 
-  dof = d*k - 0.5*k*(k-1) + 3 + length(beta.init) # Degrees of Freedom for PPCA + length(beta.init)
-  bic = -2*lp + dof*log(n)
+  ll = prca.log_likelihood(X, W, sigSq)
+  dof = d*k - 0.5*k*(k-1) + 3 + length(beta0) # Degrees of Freedom for PPCA + #HPs
+  bic = -2*ll + dof*log(n)
 
   prcaObj = list(W     = W,
                  sigSq = sigSq,
                  mu    = attr(X, "scaled:center"),
                  V     = E_V1,
-                 Vvar  = E_V2,
+                 #Vvar  = E_V2,
+                 ll    = ll,
                  lp    = lp,
                  lps   = lps,
                  bic   = bic,
@@ -213,6 +209,7 @@ prca <- function(X, k, covar.fn, beta.init=c(), maxit=10, tol=1e-2, trace=0,
 }
 
 prca.log_likelihood <- function(X, W, sigSq) {
+  # Careful! Data X should be centered
   d = nrow(W)
   k = ncol(W)
   n = nrow(X)
@@ -233,11 +230,26 @@ prca.log_prior <- function(K, W) {
   d = nrow(W)
   k = ncol(W)
 
-  K_chol = as.dgCMatrix.spam(as.spam(chol.spam(as.spam.dgCMatrix(K), pivot=FALSE)))
-  #K_chol = Matrix::chol(K, pivot=FALSE)
-  return(-0.5*( d*k*log(2*pi) +
-                2*k*sum(log(diag(K_chol))) +
-                norm(solve(t(K_chol), W), type='F')^2))
+  if (is(K, "sparseMatrix")) {
+    Kc = Cholesky(K, LDL=TRUE, pivot=TRUE)
+
+    # Fast calculation of the log determinant of K
+    logDetK = as.numeric(-determinant(solve(Kc, system='D'), log=TRUE)$modulus)
+    #logDetK2 = as.numeric(determinant(K, log=TRUE)$modulus) # TODO: Benchmark, and confirm equality
+
+    # Fast calculation of Tr[W' K^{-1} W]
+    KinvW     = solve(Kc, W, system="A")
+    trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
+                           numeric(1)))
+  } else {
+    stop("Still need to implement dealing w/ non-sparse matrices")
+  }
+
+
+  return(-0.5*( k*d*log(2*pi) +
+                k*logDetK +
+                trWtKinvW))
+
 }
 
 prca.log_posterior <- function(X, K, W, sigSq) {
