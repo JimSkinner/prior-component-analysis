@@ -1,0 +1,114 @@
+
+R version 3.1.1 (2014-07-10) -- "Sock it to Me"
+Copyright (C) 2014 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> #' Do exactly the same as before but with real data. Ignore wendland kernel because of computational issues.
+> library(igraph)
+> library(fields)
+> 
+> source("../../prior-component-analysis.R", chdir=TRUE)
+> source("~/Documents/uvFAIMS/HE/read_data.R")
+> 
+> #' Load data
+> data.df = read_data()
+> X = scale(do.call(rbind, data.df$vecs)[,((52224/2)+1):52224], scale=FALSE)
+> 
+> #' Set up covariance function
+> dim.faims = c(512, 51)
+> A = get.adjacency(make_lattice(dim.faims))
+> covar.fn.neighbours = function(gamma) {
++   return(Diagonal(ncol(X)) + gamma*A)
++ }
+> 
+> #' Add noise to data and de-noise. Use k=4 because BIC picked this
+> k = 4
+> noiseLevels = seq(0, 1.5*sd(X), length=10)
+> reconstErrs = data.frame(pca=numeric(0),
++                          prca.neighbours=numeric(0))
+> 
+> #TODO: Check plotting works!
+> 
+> for (nli in 1:length(noiseLevels)) { #seq_along(noiseLevels)) {
++   gc()
++ 
++   X.noisy = X + matrix(rnorm(nrow(X)*ncol(X), sd=noiseLevels[nli]), nrow=nrow(X), ncol=ncol(X))
++ 
++   print(paste("svd", nli))
++   out.svd = svd(X.noisy)
++ 
++   print(paste("nn", nli))
++   out.prca.neighbours = prca(X.noisy, k, covar.fn.neighbours, 0.1, maxit=10, trace=2, report_iter=5)
++ 
++   rec.svd             = out.svd$u[,1:k] %*%
++                         diag(out.svd$d[1:k]) %*% t(out.svd$v)[1:k,]
++   rec.prca.neighbours = tcrossprod(out.prca.neighbours$V, out.prca.neighbours$W)
++ 
++   reconstErrs[nli, c("pca", "prca.neighbours")] = c(
++     norm(X - rec.svd, 'F'),
++     norm(X - rec.prca.neighbours, 'F')
++   )
++ 
++   rm(out.prca.neighbours)
++   gc()
++ }
+[1] "svd 1"
+[1] "nn 1"
+[1] "Iteration 0: log likelihood = 6624954.9821 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 7879397.6402 (delta=0.0603)"
+[1] "Iteration 10: log likelihood = 7879397.9419 (delta=0.0603)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 2"
+[1] "nn 2"
+[1] "Iteration 0: log likelihood = 5900848.2517 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 7382694.4761 (delta=0.106)"
+[1] "Iteration 10: log likelihood = 7382695.0085 (delta=0.1064)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 3"
+[1] "nn 3"
+[1] "Iteration 0: log likelihood = 4967358.8131 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 6543540.2014 (delta=0.0958)"
+[1] "Iteration 10: log likelihood = 6543540.6973 (delta=0.0994)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 4"
+[1] "nn 4"
+[1] "Iteration 0: log likelihood = 4281169.1563 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 5854966.6046 (delta=-0.2946)"
+[1] "Iteration 10: log likelihood = 5854965.2318 (delta=-0.2664)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 5"
+[1] "nn 5"
+[1] "Iteration 0: log likelihood = 3768338.0294 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 5316922.2794 (delta=-0.9331)"
+[1] "Iteration 10: log likelihood = 5316917.7982 (delta=-0.8771)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 6"
+[1] "nn 6"
+[1] "Iteration 0: log likelihood = 3360158.8348 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 4879017.1135 (delta=-1.1241)"
+[1] "Iteration 10: log likelihood = 4879010.771 (delta=-1.3265)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 7"
+[1] "nn 7"
+[1] "Iteration 0: log likelihood = 3021948.1418 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 4515849.0484 (delta=-0.7698)"
+[1] "Iteration 10: log likelihood = 4515842.4504 (delta=-1.5437)"
+[1] "Convergence criteria reached: 10 iterations"
+[1] "svd 8"
+[1] "nn 8"
+[1] "Iteration 0: log likelihood = 2735197.4126 (delta=Inf)"
+[1] "Iteration 5: log likelihood = 4205984.6511 (delta=-0.0463)"
