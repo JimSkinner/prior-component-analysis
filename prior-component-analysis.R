@@ -4,18 +4,18 @@ library(ucminf)
 
 source("util.R")
 
-prca <- function(X, k, locations, covar.fn, covar.fn.d, beta0=c(),
+prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
                  trace=0, report_iter=10, max.dist=Inf,
                  maxit=10, tol=1e-2, ucminf.control=list()) {
 
   ## Define commonly used variables.
-  #X = scale(X, scale=FALSE) # Centered data: nxd
+  X = scale(X, scale=FALSE) # Centered data: nxd
   n = nrow(X)               # Number of samples
   d = ncol(X)               # Original dimensionality
 
   ## Perform sanity checks.
   stopifnot(ncol(X) >= k) # Cannot deal with complete/overcomplete case
-  stopifnot(nrow(X) >= k) # TODO: Check if I can actually deal witht his and if I can change to an equality
+  stopifnot(nrow(X) >= k) # TODO: Check if I can deal with equality case
 
   # Define a few defaults for the optimx routine in optimizing beta, and
   # overwrite them with any values specified by the user.
@@ -90,8 +90,17 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d, beta0=c(),
     ## gives the correct answer but is MUCH slower and using update gives the
     ## wrong answer.
     W.tilde = vapply(1:k, function(i_) {
-      Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=FALSE, perm=TRUE)
-      as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A"))
+      if (is(K, "sparseMatrix")) {
+        Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=FALSE, perm=TRUE)
+        return(as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A")))
+      } else {
+        KplusDiag = K
+        diag(KplusDiag) = diag(KplusDiag) + sigSq*vvsuminv.eig$values[i_]
+        Kc = base::chol(KplusDiag, pivot=TRUE)
+        pivot = attr(Kc, "pivot")
+        unpivot = order(pivot)
+        return(backsolve(Kc, forwardsolve(t(Kc), C.tilde[pivot,i_]))[unpivot])
+      }
     }, numeric(d))
     W = W.tilde %*% t(vvsuminv.eig$vectors)
 
@@ -129,30 +138,34 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d, beta0=c(),
 
       }
 
-      min.f.d <- function(beta_) {
-        K_  = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-        dK_ = covar.fn.d(locations, beta=beta_, D=D, max.dist=max.dist)
+      if (is.function(covar.fn.d)) {
+        min.f.d <- function(beta_) {
+          K_  = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
+          dK_ = covar.fn.d(locations, beta=beta_, D=D, max.dist=max.dist)
 
-        Kc  = Cholesky(K_, LDL=TRUE, pivot=TRUE)
+          Kc  = Cholesky(K_, LDL=TRUE, pivot=TRUE)
 
-        deriv = numeric(length(beta_))
-        for (i in 1:length(beta_)) { # TODO: Neaten me
-          a = k * sum(diag(solve(Kc, dK_[[i]], system="A")))
+          deriv = numeric(length(beta_))
+          for (i in 1:length(beta_)) { # TODO: Neaten me
+            a = k * sum(diag(solve(Kc, dK_[[i]], system="A")))
 
-          b = solve(Kc, W, system="A")
+            b = solve(Kc, W, system="A")
 
-          c = sum(vapply(1:k, function(k_) {
-            as.numeric(b[,k_] %*% dK_[[i]] %*% b[,k_])
-          }, numeric(1)))
+            c = sum(vapply(1:k, function(k_) {
+              as.numeric(b[,k_] %*% dK_[[i]] %*% b[,k_])
+            }, numeric(1)))
 
-          deriv[i] = a-c
+            deriv[i] = a-c
+          }
+          return(0.5*deriv)
         }
-        return(0.5*deriv)
+        beta.opt = ucminf(par=beta, fn=min.f, gr=min.f.d, control=ucminf.control)
+      } else {
+        beta.opt = ucminf(par=beta, fn=min.f, control=ucminf.control)
       }
 
       # TODO: Relative tolerance = relative change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      beta.opt = ucminf(par=beta, fn=min.f, gr=min.f.d, control=ucminf.control)
-      beta     = beta.opt$par # ucminf
+      beta     = beta.opt$par
       K        = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
     }
 
@@ -242,7 +255,17 @@ prca.log_prior <- function(K, W) {
     trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
                            numeric(1)))
   } else {
-    stop("Still need to implement dealing w/ non-sparse matrices")
+    # TODO: Poor numrical problems? Try a QRdecomp & solve() or an LDL
+    # decomposition (KFAS package)
+    Kc = base::chol(K, pivot=TRUE)
+
+    pivot = attr(Kc, "pivot")
+    unpivot = order(pivot)
+
+    logDetK   = 2*sum(log(diag(Kc)))
+    KinvW     = backsolve(Kc, forwardsolve(t(Kc), W[pivot,]))[unpivot,]
+    trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
+                           numeric(1)))
   }
 
 
