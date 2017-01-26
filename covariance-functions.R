@@ -133,20 +133,25 @@ matern.MR.cov <- function(X, beta, max.dist = 0.1) {
   return(D)
 }
 
-# In progress
-#faims.cov <- function(X, X2=NA, beta=c(), D=NA, max.dist=0.1, max.points=NA) {
-#  if (all(is.na(D))) {
-#    MRD = distanceMatrix(X, X2, max.dist=max.dist, max.points=max.points)
-#  }
-#  MRpart = ((2+cos(2*pi*MRD@x/max.dist))*(1-MRD@x/max.dist)/3 + sin(2*pi*MRD@x/max.dist)/(2*pi))
-#
-#  sigma0 = beta[1]
-#  l1 = beta[2]
-#  l2 = beta[3]
-#  l3 = beta[4]
-#
-#  expPart = exp(beta[1]) * exp(-(D@x^2)/(2*exp(beta[2])^2))
-#
-#  D@x = MRpart * expPart
-#  return(D)
-#}
+faims.cov <- function(X, X2=NA, beta=c(), D=NA, max.dist=0.1, max.points=NA) {
+  MRD = D
+  if (all(is.na(MRD))) {
+    MRD = distanceMatrix(X, X2, max.dist=max.dist, max.points=max.points)
+  }
+  MRD@x = ((2+cos(2*pi*MRD@x/max.dist))*(1-MRD@x/max.dist)/3 + sin(2*pi*MRD@x/max.dist)/(2*pi))
+
+  sigma0 = exp(beta[1])
+  l1 = exp(beta[2])
+  l2 = exp(beta[3])
+  l3 = exp(beta[4])
+  l4 = exp(beta[5])
+
+  # TODO: Have I got x- and y- the right way around??
+  # TODO: Respect taper support
+  dSquared = (rdist(X[,1])/(l1 + 0.5*l2*outer(X[,1], X[,1], '+'))^2 +
+              rdist(X[,2])/((l3 + 0.5*l4*outer(X[,2], X[,2], '+'))^2))
+  expPart  = sigma0 * exp(-0.5*dSquared)
+
+  M = MRD * expPart
+  return(M)
+}
