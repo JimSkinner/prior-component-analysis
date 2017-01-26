@@ -4,6 +4,8 @@ library(ucminf)
 
 source("util.R")
 
+# TODO: If passed a prca obj, continue inference.
+
 prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
                  trace=0, report_iter=10, max.dist=Inf,
                  maxit=10, tol=1e-2, ucminf.control=list()) {
@@ -26,7 +28,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   ## Initialize W and sigma^2 from PPCA
   covar.svd = svd(X/sqrt(n), nu=0, nv=k)
   covar.eigval = covar.svd$d^2
-  sigSq = mean(covar.eigval[-(1:k)])
+  sigSq = sum(covar.eigval[-(1:k)])/(d-k)
   W     = covar.svd$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
 
   if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
@@ -40,7 +42,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
   stopifnot(is(K, "Matrix"))
 
-  lp   = prca.log_posterior(X, K, W, sigSq) # Current log posterior
+  lp   = prca.log_posterior(X, K, W, 0, sigSq) # Current log posterior
   lps  = numeric(maxit) # Record of log posteriors for monitoring convergence
 
   converged = FALSE
@@ -117,25 +119,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
       # The part of the expected log likelihood which varies with beta
       min.f <- function(beta_) {
         K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-
         return(-prca.log_prior(K_, W))
-
-        #tryCatch({
-        #  Kc   = Cholesky(K_, LDL=FALSE, pivot=TRUE)
-        #}, error=function(msg) browser())
-        #perm = Kc@perm + 1
-
-        #logDet    = as.numeric(Matrix::determinant(Kc, logarithm=TRUE)$modulus)*2
-        #trWtKinvW = norm(Matrix::solve(Kc, W[perm,,drop=FALSE], system='L'), 'F')^2
-        #return(k*logDet + trWtKinvW)
-
-        #Ksub   = nearPD(covar.fn(locations.sub, beta_)) #TODO: Precondition??
-        #logDet = log(sum(Ksub$eigenvalues))
-
-        #R = chol(as.matrix(Ksub$mat), permut=TRUE)
-
-        #trWtKinvW = norm(Matrix::solve(Kc, W.sub[perm,,drop=FALSE], system='L'), 'F')^2
-
       }
 
       if (is.function(covar.fn.d)) {
@@ -172,7 +156,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
     ####################################
     ## Convergence criteria & printouts if trace > 0
     ####################################
-    lpNew = prca.log_posterior(X, K, W, sigSq)
+    lpNew = prca.log_posterior(X, K, W, 0, sigSq)
     if (iteration >= maxit) { # Check for maximum iterations reached. If so, print.
       if (trace>0) {
         print(paste("Convergence criteria reached:", iteration, "iterations"))
@@ -203,7 +187,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   #W = W %*% P
   #E_V1 = E_V1 %*% P
 
-  ll = prca.log_likelihood(X, W, sigSq)
+  ll = prca.log_likelihood(X, W, 0, sigSq)
   dof = d*k - 0.5*k*(k-1) + 3 + length(beta0) # Degrees of Freedom for PPCA + #HPs
   bic = -2*ll + dof*log(n)
 
@@ -221,22 +205,28 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   return(prcaObj)
 }
 
-prca.log_likelihood <- function(X, W, sigSq) {
-  # Careful! Data X should be centered
+prca.log_likelihood <- function(X, W, mu, sigSq) {
+  X = sweep(X, 2, mu)
+
   d = nrow(W)
   k = ncol(W)
   n = nrow(X)
 
   W.sv  = svd(W, nu=0, nv=0)$d
-  R   = chol(crossprod(W)/sigSq + diag(k))
+  R   = chol(crossprod(W) + sigSq*diag(k))
 
-  # This monstrosity is an efficient calculation of the log likelihood
-  lla = -0.5*n*d*log(2*pi)
-  llb = -0.5*n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
-  llc = -0.5*((norm(X, 'F')^2)/sigSq -
-              (norm(forwardsolve(t(R), t(W)%*%t(X)), 'F')^2)/(sigSq^2))
+  ## This monstrosity is an efficient calculation of the log likelihood
+  #lla = -0.5*n*d*log(2*pi)
+  #llb = -0.5*n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
+  #llc = -0.5*((norm(X, 'F')^2)/sigSq -
+  #            (norm(forwardsolve(t(R), t(W)%*%t(X)), 'F')^2)/(sigSq^2))
+  #return(lla + llb + llc)
 
-  return(lla + llb + llc)
+  const     = n*d*log(2*pi)
+  nLogDetC  = n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
+  trXCinvXt = ((norm(X, 'F')^2) -
+               (norm(forwardsolve(t(R), t(W))%*%t(X), 'F')^2))/sigSq
+  return(-0.5*(const + nLogDetC + trXCinvXt))
 }
 
 prca.log_prior <- function(K, W) {
@@ -275,8 +265,8 @@ prca.log_prior <- function(K, W) {
 
 }
 
-prca.log_posterior <- function(X, K, W, sigSq) {
-  return(prca.log_likelihood(X, W, sigSq) + prca.log_prior(K, W));
+prca.log_posterior <- function(X, K, W, mu, sigSq) {
+  return(prca.log_likelihood(X, W, mu, sigSq) + prca.log_prior(K, W));
 }
 
 predict.prca <- function(prcaObj, samples) {
