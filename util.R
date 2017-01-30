@@ -34,8 +34,7 @@ distanceMatrix <- function(X, X2=NA, max.dist=Inf, max.points=NA) {
                        index1=TRUE)
     } else {
       D = sparseMatrix(i=Dtriples$ind[,1], j=Dtriples$ind[,2],
-                       dims=c(nrow(X), nrow(X2)), x=Dtriples$ra,
-                       dims=c(nrow(X),nrow(X2)), index1=TRUE)
+                       dims=c(nrow(X), nrow(X2)), x=Dtriples$ra, index1=TRUE)
     }
   } else {
     if (symmetric) {
