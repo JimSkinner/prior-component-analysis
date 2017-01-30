@@ -214,20 +214,13 @@ prca.log_likelihood <- function(X, W, mu, sigSq) {
   k = ncol(W)
   n = nrow(X)
 
-  W.sv  = svd(W, nu=0, nv=0)$d
-  R   = chol(crossprod(W) + sigSq*diag(k))
-
-  ## This monstrosity is an efficient calculation of the log likelihood
-  #lla = -0.5*n*d*log(2*pi)
-  #llb = -0.5*n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
-  #llc = -0.5*((norm(X, 'F')^2)/sigSq -
-  #            (norm(forwardsolve(t(R), t(W)%*%t(X)), 'F')^2)/(sigSq^2))
-  #return(lla + llb + llc)
+  W.sv = svd(W, nu=0, nv=0)$d
+  R    = chol(crossprod(W) + sigSq*diag(k))
 
   const     = n*d*log(2*pi)
   nLogDetC  = n*((d-k)*log(sigSq) + sum(log(W.sv^2 + sigSq)))
-  trXCinvXt = ((norm(X, 'F')^2) -
-               (norm(forwardsolve(t(R), t(W))%*%t(X), 'F')^2))/sigSq
+  trXCinvXt = (norm(X, 'F')^2 -
+               norm(forwardsolve(t(R), t(W))%*%t(X), 'F')^2)/sigSq
   return(-0.5*(const + nLogDetC + trXCinvXt))
 }
 
