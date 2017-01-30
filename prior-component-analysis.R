@@ -206,6 +206,8 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
 }
 
 prca.log_likelihood <- function(X, W, mu, sigSq) {
+  if (is.vector(X)) X = matrix(X, nrow=1)
+
   X = sweep(X, 2, mu)
 
   d = nrow(W)
