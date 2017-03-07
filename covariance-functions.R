@@ -113,14 +113,22 @@ exp.MR.cov.d <- function(X, X2=NA, beta=c(), D=NA, max.dist=0.1, max.points=NA) 
   if (all(is.na(D))) {
     D   = distanceMatrix(X, max.dist=max.dist, max.points=max.points)
   }
-  MRpart = ((2+cos(2*pi*D@x/max.dist))*(1-D@x/max.dist)/3 + sin(2*pi*D@x/max.dist)/(2*pi))
 
-  expPart = exp(beta[1]) * exp(-(D@x^2)/(2*exp(beta[2])^2))
-
-  dK1 = sparseMatrix(x=expPart * MRpart,
-                     i=D@i, p=D@p, dims=D@Dim, symmetric=TRUE, index1=FALSE)
-  dK2 = sparseMatrix(x=(D@x^2)*exp(-2*beta[2]) * expPart * MRpart,
-                     i=D@i, p=D@p, dims=D@Dim, symmetric=TRUE, index1=FALSE)
+  if (is(D, "sparseMatrix")) {
+    MRpart  = ((2+cos(2*pi*D@x/max.dist))*(1-D@x/max.dist)/3 +
+               sin(2*pi*D@x/max.dist)/(2*pi))
+    expPart = exp(beta[1]) * exp(-(D@x^2)/(2*exp(beta[2])^2))
+    dK1 = sparseMatrix(x=expPart * MRpart,
+                       i=D@i, p=D@p, dims=D@Dim, symmetric=TRUE, index1=FALSE)
+    dK2 = sparseMatrix(x=(D@x^2)*exp(-2*beta[2]) * expPart * MRpart,
+                       i=D@i, p=D@p, dims=D@Dim, symmetric=TRUE, index1=FALSE)
+  } else {
+    MRpart  = ((2+cos(2*pi*D/max.dist))*(1-D/max.dist)/3 +
+               sin(2*pi*D/max.dist)/(2*pi))
+    expPart = exp(beta[1]) * exp(-(D^2)/(2*exp(beta[2])^2))
+    dK1 = expPart * MRpart
+    dK2 = (D^2)*exp(-2*beta[2]) * expPart * MRpart
+  }
 
   return(list(dK1, dK2))
 }
