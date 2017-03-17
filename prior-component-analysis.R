@@ -95,7 +95,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
     ## wrong answer.
     W.tilde = vapply(1:k, function(i_) {
       if (is(K, "sparseMatrix")) {
-        Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=FALSE, perm=TRUE)
+        Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=TRUE, perm=TRUE)
         return(as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A")))
       } else {
         KplusDiag = K
@@ -163,18 +163,30 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
               deriv[i] = 0.5*(working1 - working3)
             }
           } else { # Non-sparse K case
-            K_c = base::chol(as.matrix(K_), pivot=TRUE)
+            K_ = Matrix(K_)
             for (i in 1:length(beta_)) {
               # Meanings as above
-              working1 = k * sum(diag(cholSolve(K_c, dK_[[i]])))
-              working2 = cholSolve(K_c, W)
-
+              working1 = k * sum(diag(solve(K_, dK_[[i]])))
+              working2 = solve(K_, W)
               working3 = sum(vapply(1:k, function(k_) {
                 as.numeric(working2[,k_] %*% dK_[[i]] %*% working2[,k_])
               }, numeric(1)))
-
               deriv[i] = 0.5*(working1 - working3)
             }
+
+            # TODO: This part of the code is now obsolete. I can do inversions BETTER with Matrix than with base:chol
+            #K_c = base::chol(as.matrix(K_), pivot=TRUE)
+            #for (i in 1:length(beta_)) {
+            #  # Meanings as above
+            #  working1 = k * sum(diag(cholSolve(K_c, dK_[[i]])))
+            #  working2 = cholSolve(K_c, W)
+
+            #  working3 = sum(vapply(1:k, function(k_) {
+            #    as.numeric(working2[,k_] %*% dK_[[i]] %*% working2[,k_])
+            #  }, numeric(1)))
+
+            #  deriv[i] = 0.5*(working1 - working3)
+            #}
           }
           #print(paste("*****", paste(beta_, collapse=', '), ":", paste(deriv, collapse=',')))
           return(deriv)
@@ -302,8 +314,12 @@ prca.log_prior <- function(K, W) {
   d = nrow(W)
   k = ncol(W)
 
-
+  K = Matrix(K)
+  # This special case for sparse matrices is more numerically stable
   if (is(K, "sparseMatrix")) {
+    if (all(K@x==0) | all(K@x==Inf)) {
+      return(-Inf)
+    }
 
     Kc = Cholesky(K, LDL=TRUE, pivot=TRUE)
 
@@ -319,19 +335,30 @@ prca.log_prior <- function(K, W) {
     KinvW     = solve(Kc, W, system="A")
     trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
                            numeric(1)))
-  } else {
-    # TODO: Poor numrical problems? Try a QRdecomp & solve() or an LDL
-    # decomposition (KFAS package)
-    Kc = base::chol(K, pivot=TRUE)
-    pivot = attr(Kc, "pivot")
+  } else if (is(K, "Matrix")) {
+    # This is more stable than a base matrix solution, but not for sparse
+    # Matrices (dealt with above)
+    if (all(K@x==0) | all(K@x==Inf)) {return(-Inf)}
+    trWtKinvW = sum(diag(crossprod(W, solve(K, W))))
+    # TODO: Calculate determinant from decomposition
+    logDetK = as.numeric(determinant(K, logarithm=TRUE)$modulus)
+  } #else { # TODO: This is also now obsolete b/c Matrix is better in every way
+  #  if (all(K==0) | all(K==Inf)) {
+  #    return(-Inf)
+  #  }
 
-    logDetK   = 2*sum(log(diag(Kc)))
-    trWtKinvW = norm(forwardsolve(t(Kc), W[pivot,]), 'F')^2
+  #  # TODO: Poor numrical problems? Try a QRdecomp & solve() or an LDL
+  #  # decomposition (KFAS package)
+  #  Kc = base::chol(K, pivot=TRUE)
+  #  pivot = attr(Kc, "pivot")
 
-    #KinvW     = cholSolve(Kc, W)
-    #trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
-    #                       numeric(1)))
-  }
+  #  logDetK   = 2*sum(log(diag(Kc)))
+  #  trWtKinvW = norm(forwardsolve(t(Kc), W[pivot,]), 'F')^2
+
+  #  #KinvW     = cholSolve(Kc, W)
+  #  #trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
+  #  #                       numeric(1)))
+  #}
 
 
   return(-0.5*( k*d*log(2*pi) +
