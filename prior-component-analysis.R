@@ -1,5 +1,6 @@
 library(Matrix)
 library(ucminf)
+library(numDeriv)
 
 source("util.R")
 
@@ -188,12 +189,15 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
         #beta.opt = optimx(par=beta, fn=min.f, gr=min.f.d, method="Nelder-Mead", control=list(trace=0))
 
         if (iteration==0) {
-          H0 = hessian(min.f, beta)
+          H0 = nearPD(hessian(min.f, beta))$mat
           invHess = solve(H0)[lower.tri(H0,diag=TRUE)]
+          stepmax = 0.2
         }
         beta.opt = ucminf(par=beta, fn=min.f, gr=min.f.d, hessian=2,
-                          control=list(invhessian.lt=invHess))
+                          control=list(invhessian.lt=invHess, stepmax=stepmax))
         invHess = beta.opt$invhessian.lt
+        stepmax = beta.opt$info['stepmax']*1.1
+        if (all(beta.opt$par == beta)) {stepmax = stepmax*0.75}
       } else {
         beta.opt = ucminf(par=beta, fn=min.f)
       }
