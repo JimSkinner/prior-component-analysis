@@ -412,74 +412,55 @@ prca.log_evidence <- function(X, K, W, mu, sigSq) {
   k = ncol(W)
 
   # Centered X
-  #Xc = sweep(X, 2, mu)
+  Xc = sweep(X, 2, mu)
 
-  ## recomute C^{-1}, which is used all over the place
-  #R = Matrix::chol(crossprod(W) + sigSq*diag(k))
-  #Cinv = Matrix(Diagonal(d)/sigSq - crossprod(forwardsolve(t(R), t(W)))/sigSq)
+  # Compute C^{-1}, which is used all over the place
+  R = Matrix::chol(crossprod(W) + sigSq*diag(k))
+  Cinv = Matrix(Diagonal(d)/sigSq - crossprod(forwardsolve(t(R), t(W)))/sigSq)
 
-  #logDetH = 0
+  logDetH = 0
 
-  ## Compute each of the blocks of H corresponding to each w_i, and the log
-  ## determinant of this block to the comulative log determinant
-  #HW = list()
-  #for (i in 1:k) {
-  #  Hw = Matrix(solve(K) +
-  #              Cinv*as.numeric(W[,i]%*%Cinv%*%t(Xc)%*%Xc%*%Cinv%*%W[,i] -
-  #                              n*W[,i]%*%Cinv%*%W[,i] + n) +
-  #              Cinv%*%(
-  #                t(Xc)%*%Xc%*%Cinv%*%W[,i,drop=F]%*%t(W[,i,drop=F]) +
-  #                W[,i,drop=F]%*%t(W[,i,drop=F])%*%Cinv%*%t(Xc)%*%Xc +
-  #                as.numeric(W[,i]%*%Cinv%*%W[,i] - 1)*t(Xc)%*%Xc -
-  #                n*W[,i,drop=F]%*%t(W[,i,drop=F])
-  #              )%*%Cinv
-  #  , forceCheck=TRUE)
-  #  HW[[i]] = Hw
-  #  logDetH = logDetH + as.numeric(determinant(Hw, logarithm=TRUE)$modulus)
-  #}
+  # Compute each of the blocks of H corresponding to each w_i, and the log
+  # determinant of this block to the comulative log determinant
+  for (i in 1:k) {
+    Hw = Matrix(solve(K) +
+                Cinv*as.numeric(W[,i]%*%Cinv%*%t(Xc)%*%Xc%*%Cinv%*%W[,i] -
+                                n*W[,i]%*%Cinv%*%W[,i] + n) +
+                Cinv%*%(
+                  t(Xc)%*%Xc%*%Cinv%*%W[,i,drop=F]%*%t(W[,i,drop=F]) +
+                  W[,i,drop=F]%*%t(W[,i,drop=F])%*%Cinv%*%t(Xc)%*%Xc +
+                  as.numeric(W[,i]%*%Cinv%*%W[,i] - 1)*t(Xc)%*%Xc -
+                  n*W[,i,drop=F]%*%t(W[,i,drop=F])
+                )%*%Cinv
+    , forceCheck=TRUE)
+    logDetH = logDetH + as.numeric(determinant(Hw, logarithm=TRUE)$modulus)
+  }
 
-  ## Compute the mu block of H, add the log det to the cumulative total
-  #Hmu = n*Cinv
-  #HmuLogDet = as.numeric(determinant(n*Cinv, logarithm=TRUE)$modulus)
-  #logDetH   = logDetH + HmuLogDet
+  # Compute the mu block of H, add the log det to the cumulative total
+  HmuLogDet = as.numeric(determinant(n*Cinv, logarithm=TRUE)$modulus)
+  logDetH   = logDetH + HmuLogDet
 
-  ## Compute the sigSq block of H & add log det to cumulative total
-  #HsigSq       = sum(diag(Xc%*%Cinv%*%Cinv%*%Cinv%*%t(Xc))) -
-  #                   0.5*n*sum(diag(Cinv%*%Cinv))
-  #HsigSqLogDet = log(sum(diag(Xc%*%Cinv%*%Cinv%*%Cinv%*%t(Xc))) -
-  #                   0.5*n*sum(diag(Cinv%*%Cinv)))
-  #logDetH      = logDetH + HsigSqLogDet
+  # Compute the sigSq block of H & add log det to cumulative total
+  HsigSqLogDet = log(sum(diag(Xc%*%Cinv%*%Cinv%*%Cinv%*%t(Xc))) -
+                     0.5*n*sum(diag(Cinv%*%Cinv)))
+  logDetH      = logDetH + HsigSqLogDet
 
-  ## Laplace-approximated log evidence
-  #logZ = (prca.log_posterior(X, K, W, mu, sigSq) +
-  #        (0.5*(d*k+d+1))*log(2*pi) -
-  #        0.5*logDetH)
-  #return(logZ)
+  # Laplace-approximated log evidence
+  logZ = (prca.log_posterior(X, K, W, mu, sigSq) +
+          (0.5*(d*k+d+1))*log(2*pi) -
+          0.5*logDetH)
+  return(logZ)
 
-  require(numDeriv)
-  H2 = -Matrix(hessian(function(z) {
-    W_ = matrix(z[1:d*k], nrow=d, ncol=k)
-    mu_ = z[(d*k+1):(d*k+d)]
-    sigSq_ = z[d*k+d+1]
-    return(prca.log_posterior(X, K, W_, mu_, sigSq_))
-  }, c(W, mu, sigSq)))
-  logZ2 = (prca.log_posterior(X, K, W, mu, sigSq) +
-           (0.5*(d*k+d+1))*log(2*pi) -
-           0.5*as.numeric(determinant(H2, logarithm=TRUE)$modulus))
-  return(logZ2)
-
-  # Hessian of the log posterior
-  #require(numDeriv)
-  #H = hessian(function(z) {
-  #  prca.log_posterior(X, K,
-  #                     W=matrix(z[1:(d*k)], nrow=d, ncol=k),
-  #                     mu=z[(d*k+1):(d*k+d)],
-  #                     sigSq=z[d*k+d+1])
-  #}, c(W, mu, sigSq))
-  #logDetHess = as.numeric(determinant(H, logarithm=TRUE)$modulus)
-  #logZ = (prca.log_posterior(X, K, W, mu, sigSq) +
-  #        (0.5*(d*k+d+1))*log(2*pi) -
-  #        0.5*logDetHess)
+  #H2 = -Matrix(hessian(function(z) {
+  #  W_ = matrix(z[1:d*k], nrow=d, ncol=k)
+  #  mu_ = z[(d*k+1):(d*k+d)]
+  #  sigSq_ = z[d*k+d+1]
+  #  return(prca.log_posterior(X, K, W_, mu_, sigSq_))
+  #}, c(W, mu, sigSq)))
+  #logZ2 = (prca.log_posterior(X, K, W, mu, sigSq) +
+  #         (0.5*(d*k+d+1))*log(2*pi) -
+  #         0.5*as.numeric(determinant(H2, logarithm=TRUE)$modulus))
+  #return(logZ2)
 }
 
 prca.log_bayes_factor <- function(X, K1, W1, mu1, sigSq1, K2, W2, mu2, sigSq2) {
