@@ -33,8 +33,8 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   sigSq = sum(covar.eigval[-(1:k)])/(d-k)
   W     = covar.svd$v %*% diag(sqrt(covar.eigval[1:k] - sigSq), ncol=k, nrow=k)
 
-  if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of",
-    "dimensionality equal to or lower than the k provided; prca may fail due",
+  if (sigSq < 1e-10) {warning("The data provided lie close to a subspace of ",
+    "dimensionality equal to or lower than the k provided; prca may fail due ",
     "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
   if (trace>=1) {print(paste("Starting prca with", length(beta0), "hyperparameters"))}
