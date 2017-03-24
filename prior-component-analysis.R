@@ -41,7 +41,11 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
 
   beta = beta0
   D    = distanceMatrix(locations, max.dist=max.dist)
-  K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
+  if (length(beta)>0) {
+    K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
+  } else { # No HPs
+    K    = covar.fn(locations, D=D, max.dist=max.dist)
+  }
   stopifnot(is(K, "Matrix"))
 
   lp   = prca.log_posterior(X, K, W, mu, sigSq) # Current log posterior
