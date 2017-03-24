@@ -102,12 +102,9 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
         Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=TRUE, perm=TRUE)
         return(as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A")))
       } else {
-        KplusDiag = K
+        KplusDiag       = K
         diag(KplusDiag) = diag(KplusDiag) + sigSq*vvsuminv.eig$values[i_]
-        Kc = base::chol(KplusDiag, pivot=TRUE)
-        pivot = attr(Kc, "pivot")
-        unpivot = order(pivot)
-        return(backsolve(Kc, forwardsolve(t(Kc), C.tilde[pivot,i_]))[unpivot])
+        return(as.vector(Matrix::solve(KplusDiag, C.tilde[,i_])))
       }
     }, numeric(d))
     W = W.tilde %*% t(vvsuminv.eig$vectors)
