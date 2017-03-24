@@ -163,3 +163,14 @@ faims.cov <- function(X, X2=NA, beta=c(), D=NA, max.dist=0.1, max.points=NA) {
   M = MRD * expPart
   return(M)
 }
+
+independent.cov <- function(X, X2=NA, beta=c(), D=NA, max.dist=NA) {
+  stopifnot(nrow(X) == length(beta))
+  return(sparseMatrix(i=1:nrow(X), j=1:nrow(X), x=exp(beta), dims=c(nrow(X), nrow(X))))
+}
+
+independent.cov.d <- function(X, X2=NA, beta=c(), D=NA, max.dist=NA) {
+  return(lapply(1:nrow(X), function(i) {
+    sparseMatrix(i=i, j=i, x=1, dims=c(nrow(X), nrow(X)))
+  }))
+}
