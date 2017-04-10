@@ -67,9 +67,12 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
     ## Maximization step for sigma^2
     E_V2sum = Reduce('+', E_V2)
 
-    sigSq = (norm(Xc, 'F')^2 -
-             2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% Xc[n_,], numeric(1))) +
-             sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1))))/(n*d)
+    sigSq = (
+      norm(Xc, 'F')^2 -
+      2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% Xc[n_,], numeric(1))) +
+      sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1)))
+    )/(n*d)
+    sigSq = max(0, sigSq)
 
     ##################
     ## EM for W
