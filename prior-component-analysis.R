@@ -1,14 +1,13 @@
+library(optimx)
 library(Matrix)
-library(ucminf)
 library(numDeriv)
+library(gsl)
 
 source("util.R")
 
-# TODO: If passed a prca obj, continue inference.
-
 prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
                  trace=0, report_iter=10, max.dist=Inf,
-                 maxit=10, tol=1e-2, ucminf.control=list()) {
+                 maxit=20, tol=1e-2) {
 
   ## Define commonly used variables.
   Xc = scale(X, scale=FALSE) # Centered data: nxd
@@ -20,13 +19,6 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   stopifnot(ncol(X) > k) # Cannot deal with complete/overcomplete case
   stopifnot(nrow(X) >= k) # TODO: Check if I can deal with equality case
 
-  if (length(ucminf.control)>0) {stop("ucminf.control not yet implemented")}
-  ## Define a few defaults for ucminf in optimizing beta, and
-  ## overwrite them with any values specified by the user.
-  #overwrite = ucminf.control
-  #ucminf.control = list(trace=0, grtol=1e-3, xtol=1e-4, maxeval=20)
-  #ucminf.control[names(overwrite)] = overwrite
-
   ## Initialize W and sigma^2 from PPCA
   covar.svd = svd(Xc/sqrt(n), nu=0, nv=k)
   covar.eigval = covar.svd$d^2
@@ -37,7 +29,9 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
     "dimensionality equal to or lower than the k provided; prca may fail due ",
     "to producing a degenerate probability model. Maybe pick a smaller k?")}
 
-  if (trace>=1) {print(paste("Starting prca with", length(beta0), "hyperparameters"))}
+  if (trace>=1) {
+    print(paste("Starting prca with", length(beta0), "hyperparameters"))
+  }
 
   beta = beta0
   D    = distanceMatrix(locations, max.dist=max.dist)
@@ -48,6 +42,7 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   }
   stopifnot(is(K, "Matrix"))
 
+  oldEv = -Inf
   lp   = prca.log_posterior(X, K, W, mu, sigSq) # Current log posterior
   lps  = numeric(maxit) # Record of log posteriors for monitoring convergence
 
@@ -119,32 +114,27 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
       ## Expectation Step
       WtW = crossprod(W)
       Minv = chol2inv(chol(WtW + sigSq*diag(k)))
+      #Minv2 = Matrix::solve(WtW + sigSq*diag(k)) # TODO: Replace; more stable?
+      #browser()
+      #print(all.equal(Minv, Minv2))
       E_V1 = Xc %*% W %*% Minv
       E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
       # The part of the expected log likelihood which varies with beta
       min.f <- function(beta_) {
-        #f <- function(beta_) {
-        #  K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-        #  return(-prca.log_prior(K_, W))
-        #}
-        #H = hessian(f, beta_)
-        #print(kappa(H))
-        #tryCatch({
         K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
         if (any(is.nan(K_@x))) {
           #print(paste(paste(beta_, collapse=', '), ": NaN"))
+          print("leak?")
+          browser()
           return(NaN)
         }
-        tryCatch({
-          prca.log_prior(K_, W)
-        }, error=function(msg) browser())
-
         #print(paste(paste(beta_, collapse=', '), ":", -prca.log_prior(K_, W)))
         return(-prca.log_prior(K_, W))
       }
 
       if (is.function(covar.fn.d)) {
+        stop("Gradients not yet implemented!")
         min.f.d <- function(beta_) {
           K_  = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
           dK_ = covar.fn.d(locations, beta=beta_, D=D, max.dist=max.dist)
@@ -177,52 +167,40 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
               }, numeric(1)))
               deriv[i] = 0.5*(working1 - working3)
             }
-
-            # TODO: This part of the code is now obsolete. I can do inversions BETTER with Matrix than with base:chol
-            #K_c = base::chol(as.matrix(K_), pivot=TRUE)
-            #for (i in 1:length(beta_)) {
-            #  # Meanings as above
-            #  working1 = k * sum(diag(cholSolve(K_c, dK_[[i]])))
-            #  working2 = cholSolve(K_c, W)
-
-            #  working3 = sum(vapply(1:k, function(k_) {
-            #    as.numeric(working2[,k_] %*% dK_[[i]] %*% working2[,k_])
-            #  }, numeric(1)))
-
-            #  deriv[i] = 0.5*(working1 - working3)
-            #}
           }
-          #print(paste("*****", paste(beta_, collapse=', '), ":", paste(deriv, collapse=',')))
           return(deriv)
         }
-        #gg = make.surface.grid(list(x=seq(beta[1]*2, beta[1]/2, length=10),
-        #                            y=seq(beta[2]/2, beta[2]*2, length=10)))
-        #zz = apply(gg, 1, min.f)
-        #plot.surface(as.surface(gg, zz), type='I')
 
-        #beta.opt = multimin(x=beta, f=min.f, df=min.f.d, method="bfgs",
-        #                    step.size=0.2, prec=1e-2)
-        #beta.opt = optimx(par=beta, fn=min.f, gr=min.f.d, method="Nelder-Mead", control=list(trace=0))
+        #TODO Combine f and df into fdf
+        Minit = multimin.init(beta, f=min.f, df=min.f.d, method="Nelder-Mead",
+                              step.size=0.5)
+        beta.opt = multimin.iterate(Minit)
 
-        if (iteration==0) {
-          H0 = nearPD(hessian(min.f, beta))$mat
-          invHess = solve(H0)[lower.tri(H0,diag=TRUE)]
-          stepmax = 0.2
-        }
-        beta.opt = ucminf(par=beta, fn=min.f, gr=min.f.d, hessian=2,
-                          control=list(invhessian.lt=invHess, stepmax=stepmax))
-        invHess = beta.opt$invhessian.lt
-        stepmax = beta.opt$info['stepmax']*1.1
-        if (all(beta.opt$par == beta)) {stepmax = stepmax*0.75}
       } else {
-        beta.opt = ucminf(par=beta, fn=min.f)
+        #beta.opt = ucminf(par=beta, fn=min.f)
+        min.f = function(beta_) {
+          K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
+          if (any(is.na(K_@x)) | any(is.nan(K_@x)) | any(is.infinite(K_@x))) { browser() }
+          return(prca.log_evidence(X, K_, W, mu, sigSq))
+        }
+        optObj = optimx(par=beta, fn=min.f, method="Nelder-Mead", control=list(
+          kkt=FALSE, starttests=FALSE, usenumDeriv=TRUE, all.methods=FALSE,
+          maximize=TRUE, trace=0, dowarn=FALSE
+        ))
+        print(optObj$value - oldEv)
+        oldEv = optObj$value
+
+        beta.opt = list(x=as.numeric(coef(optObj)))
       }
 
       # TODO: Relative tolerance = relative change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      beta     = beta.opt$par # ucminf
+      #beta     = beta.opt$par # ucminf
       #beta     = as.numeric(coef(beta.opt)) # optimx
-      #beta = beta.opt$x #multimin
-      K        = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
+
+      beta = beta.opt$x #multimin
+      K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
+
+      if(any(is.na(K@x)) | any(is.nan(K@x)) | any(is.infinite(K@x))) browser()
     }
 
     ####################################
@@ -266,33 +244,33 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   ll = prca.log_likelihood(X, W, mu, sigSq)
   dof = d*k - 0.5*k*(k-1) + 3 + length(beta0) # Degrees of Freedom for PPCA + #HPs
   bic = -2*ll + dof*log(n)
-  bic2 = -2*ll + dof*log(n)
-
-  #hess = hessian(function(z) {
-  #  prca.log_posterior(X, K,
-  #                     W=matrix(z[1:(d*k)], nrow=d, ncol=k),
-  #                     mu=z[d*k+1],
-  #                     sigSq=z[d*k+2])
-  #}, x(W, mu, sigSq))
-  #logDetHess = determinant(hess, logarith=TRUE)
-  #logZ = (prca.log_posterior(X, K, W, mu, sigSq) +
-  #        (0.5*(d*k+2))*log(2*pi) +
-  #        logDetHess)
 
   prcaObj = list(X     = X,
                  W     = W,
                  sigSq = sigSq,
                  mu    = mu,
                  V     = E_V1,
-                 #Vvar  = E_V2,
                  ll    = ll,
                  lp    = lp,
                  lps   = lps,
                  bic   = bic,
                  beta  = beta,
+                 locations = locations,
+                 covar.fn = covar.fn,
+                 covar.fn.d = covar.fn.d,
                  K     = K)
   class(prcaObj) = "prca"
   return(prcaObj)
+}
+
+prca.continue <- function(prcaObj, trace=0, report_iter=10, max.dist=Inf,
+                          maxit=10, tol=1e-2, ucminf.control=list()) {
+  newPrcaObj = prca(X=prcaObj$X, k=ncol(prcaObj$W), locations=prcaObj$locations,
+                    covar.fn=prcaObj$covar.fn, covar.fn.d=prcaObj$covar.fn.d,
+                    beta0=prcaObj$beta, trace=trace, report_iter=report_iter,
+                    max.dist=max.dist, maxit=maxit, tol=tol,
+                    ucminf.control=ucminf.control)
+  return(newPrcaObj)
 }
 
 prca.log_likelihood <- function(X, W, mu, sigSq) {
@@ -318,7 +296,6 @@ prca.log_prior <- function(K, W) {
   d = nrow(W)
   k = ncol(W)
 
-  K = Matrix(K)
   # This special case for sparse matrices is more numerically stable
   if (is(K, "sparseMatrix")) {
     if (all(K@x==0) | all(K@x==Inf)) {
@@ -333,42 +310,22 @@ prca.log_prior <- function(K, W) {
     logDetK = as.numeric(determinant(K, logarithm=TRUE)$modulus)
     if (logDetK==Inf) {return(-Inf)}
 
-    #logDetK2 = as.numeric(determinant(K, log=TRUE)$modulus) # TODO: Benchmark, and confirm equality
-
-    # Fast calculation of Tr[W' K^{-1} W]
     KinvW     = solve(Kc, W, system="A")
     trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
                            numeric(1)))
-  } else if (is(K, "Matrix")) {
+  } else {
+    K = Matrix(K)
     # This is more stable than a base matrix solution, but not for sparse
     # Matrices (dealt with above)
     if (all(K@x==0) | all(K@x==Inf)) {return(-Inf)}
     trWtKinvW = sum(diag(crossprod(W, solve(K, W))))
     # TODO: Calculate determinant from decomposition
     logDetK = as.numeric(determinant(K, logarithm=TRUE)$modulus)
-  } #else { # TODO: This is also now obsolete b/c Matrix is better in every way
-  #  if (all(K==0) | all(K==Inf)) {
-  #    return(-Inf)
-  #  }
-
-  #  # TODO: Poor numrical problems? Try a QRdecomp & solve() or an LDL
-  #  # decomposition (KFAS package)
-  #  Kc = base::chol(K, pivot=TRUE)
-  #  pivot = attr(Kc, "pivot")
-
-  #  logDetK   = 2*sum(log(diag(Kc)))
-  #  trWtKinvW = norm(forwardsolve(t(Kc), W[pivot,]), 'F')^2
-
-  #  #KinvW     = cholSolve(Kc, W)
-  #  #trWtKinvW = sum(vapply(1:k, function(k_) (W[,k_] %*% KinvW[,k_])[1,1],
-  #  #                       numeric(1)))
-  #}
-
+  }
 
   return(-0.5*( k*d*log(2*pi) +
                 k*logDetK +
                 trWtKinvW))
-
 }
 
 prca.log_posterior <- function(X, K, W, mu, sigSq) {
@@ -420,14 +377,15 @@ prca.log_evidence <- function(X, K, W, mu, sigSq) {
 
   # Compute C^{-1}, which is used all over the place
   R = Matrix::chol(crossprod(W) + sigSq*diag(k))
-  Cinv = Matrix(Diagonal(d)/sigSq - crossprod(forwardsolve(t(R), t(W)))/sigSq)
+  Cinv = Matrix(Diagonal(d) - Matrix(crossprod(forwardsolve(t(R), t(W)))))/sigSq
 
   logDetH = 0
 
   # Compute each of the blocks of H corresponding to each w_i, and the log
   # determinant of this block to the comulative log determinant
   for (i in 1:k) {
-    Hw = Matrix(solve(K) +
+    # This way is empirically better. Not sure why.
+    Hw = Matrix(solve(K) + # TODO: I can compute the determinant of theis block without inverting K :D
                 Cinv*as.numeric(W[,i]%*%Cinv%*%t(Xc)%*%Xc%*%Cinv%*%W[,i] -
                                 n*W[,i]%*%Cinv%*%W[,i] + n) +
                 Cinv%*%(
@@ -435,9 +393,25 @@ prca.log_evidence <- function(X, K, W, mu, sigSq) {
                   W[,i,drop=F]%*%t(W[,i,drop=F])%*%Cinv%*%t(Xc)%*%Xc +
                   as.numeric(W[,i]%*%Cinv%*%W[,i] - 1)*t(Xc)%*%Xc -
                   n*W[,i,drop=F]%*%t(W[,i,drop=F])
-                )%*%Cinv
-    , forceCheck=TRUE)
+                )%*%Cinv, forceCheck=TRUE)
     logDetH = logDetH + as.numeric(determinant(Hw, logarithm=TRUE)$modulus)
+
+    #wBlockTimesK = Matrix(
+    #  Diagonal(d) +
+    #  K%*%Cinv*as.numeric(W[,i]%*%Cinv%*%t(Xc)%*%Xc%*%Cinv%*%W[,i] -
+    #                      n*W[,i]%*%Cinv%*%W[,i] + n) +
+    #  K%*%Cinv%*%(
+    #    t(Xc)%*%Xc%*%Cinv%*%W[,i,drop=F]%*%t(W[,i,drop=F]) +
+    #    W[,i,drop=F]%*%t(W[,i,drop=F])%*%Cinv%*%t(Xc)%*%Xc +
+    #    as.numeric(W[,i]%*%Cinv%*%W[,i] - 1)*t(Xc)%*%Xc -
+    #    n*W[,i,drop=F]%*%t(W[,i,drop=F])
+    #  )%*%Cinv
+    #, forceCheck=TRUE)
+
+    #logBlockDet = as.numeric(determinant(wBlockTimesK, logarithm=TRUE)$modulus
+    #                         - determinant(K, logarithm=TRUE)$modulus)
+    #logDetH = logDetH + logBlockDet
+    #browser() # TODO: Only need to compute det(K) once
   }
 
   # Compute the mu block of H, add the log det to the cumulative total
@@ -445,6 +419,9 @@ prca.log_evidence <- function(X, K, W, mu, sigSq) {
   logDetH   = logDetH + HmuLogDet
 
   # Compute the sigSq block of H & add log det to cumulative total
+  tmp = (sum(diag(Xc%*%Cinv%*%Cinv%*%Cinv%*%t(Xc))) -
+                     0.5*n*sum(diag(Cinv%*%Cinv)))
+  if (tmp<=0) {browser()}
   HsigSqLogDet = log(sum(diag(Xc%*%Cinv%*%Cinv%*%Cinv%*%t(Xc))) -
                      0.5*n*sum(diag(Cinv%*%Cinv)))
   logDetH      = logDetH + HsigSqLogDet
@@ -454,17 +431,6 @@ prca.log_evidence <- function(X, K, W, mu, sigSq) {
           (0.5*(d*k+d+1))*log(2*pi) -
           0.5*logDetH)
   return(logZ)
-
-  #H2 = -Matrix(hessian(function(z) {
-  #  W_ = matrix(z[1:d*k], nrow=d, ncol=k)
-  #  mu_ = z[(d*k+1):(d*k+d)]
-  #  sigSq_ = z[d*k+d+1]
-  #  return(prca.log_posterior(X, K, W_, mu_, sigSq_))
-  #}, c(W, mu, sigSq)))
-  #logZ2 = (prca.log_posterior(X, K, W, mu, sigSq) +
-  #         (0.5*(d*k+d+1))*log(2*pi) -
-  #         0.5*as.numeric(determinant(H2, logarithm=TRUE)$modulus))
-  #return(logZ2)
 }
 
 prca.log_bayes_factor <- function(X, K1, W1, mu1, sigSq1, K2, W2, mu2, sigSq2) {
