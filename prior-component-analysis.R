@@ -5,9 +5,9 @@ library(gsl)
 
 source("util.R")
 
-prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
+prca <- function(X, k, locations, covar.fn, covar.fn.d=NULL, beta0=c(),
                  trace=0, report_iter=10, max.dist=Inf,
-                 maxit=20, tol=1e-2) {
+                 maxit=20, maxit.outer=5, tol=1e-2) {
 
   ## Define commonly used variables.
   Xc = scale(X, scale=FALSE) # Centered data: nxd
@@ -42,189 +42,120 @@ prca <- function(X, k, locations, covar.fn, covar.fn.d=NA, beta0=c(),
   }
   stopifnot(is(K, "Matrix"))
 
-  oldEv = -Inf
   lp   = prca.log_posterior(X, K, W, mu, sigSq) # Current log posterior
   lps  = numeric(maxit) # Record of log posteriors for monitoring convergence
 
-  converged = FALSE
+  outerConverged = FALSE
+  innerConverged = FALSE
   iteration = 0
-  while (!converged) {
-    ##################
-    ## EM for sigma^2
-    ##################
+  outerIteration = 0
+  while (!outerConverged) {
+    while (!innerConverged) {
+      ##################
+      ## EM for sigma^2
+      ##################
 
-    ## Expectation Step
-    WtW = crossprod(W)
-    Minv = chol2inv(chol(WtW + sigSq*diag(k)))
-    E_V1 = Xc %*% W %*% Minv
-    E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
-
-    ## Maximization step for sigma^2
-    E_V2sum = Reduce('+', E_V2)
-
-    sigSq = (
-      norm(Xc, 'F')^2 -
-      2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% Xc[n_,], numeric(1))) +
-      sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1)))
-    )/(n*d)
-    sigSq = max(0, sigSq)
-
-    ##################
-    ## EM for W
-    ##################
-
-    ## Expectation Step
-    WtW = crossprod(W)
-    if (all(WtW==0)) {stop(paste("SPCA has failed due to numerical instability.",
-      "Try dividing X by it's largest singular value to improve numerical",
-      "stability"))}
-    Minv = chol2inv(chol(WtW + sigSq*diag(k)))
-    E_V1 = Xc %*% W %*% Minv
-    E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
-
-    ## Maximization step for W
-    xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(Xc[i_,], E_V1[i_,])))
-    vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
-    vvsuminv.eig = list(values=rev(1/vvsum.eig$values),
-                        vectors=vvsum.eig$vectors[,k:1])
-
-    C.tilde  = (K %*% xvsum %*% vvsuminv.eig$vectors %*%
-                diag(vvsuminv.eig$values, ncol=k, nrow=k))
-
-    ## I have been unable to speed this up by doing Kc <- Cholesky(K) and
-    ## calculating each W.tilde_i with a diagonal update to Kc. Using updown
-    ## gives the correct answer but is MUCH slower and using update gives the
-    ## wrong answer.
-    W.tilde = vapply(1:k, function(i_) {
-      if (is(K, "sparseMatrix")) {
-        Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=TRUE, perm=TRUE)
-        return(as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A")))
-      } else {
-        KplusDiag       = K
-        diag(KplusDiag) = diag(KplusDiag) + sigSq*vvsuminv.eig$values[i_]
-        return(as.vector(Matrix::solve(KplusDiag, C.tilde[,i_])))
-      }
-    }, numeric(d))
-    W = W.tilde %*% t(vvsuminv.eig$vectors)
-
-    ##################
-    ## EM for beta
-    ##################
-    if (length(beta0) > 0) { # There are HPs to tune
       ## Expectation Step
       WtW = crossprod(W)
       Minv = chol2inv(chol(WtW + sigSq*diag(k)))
       #Minv2 = Matrix::solve(WtW + sigSq*diag(k)) # TODO: Replace; more stable?
-      #browser()
-      #print(all.equal(Minv, Minv2))
       E_V1 = Xc %*% W %*% Minv
       E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
 
-      # The part of the expected log likelihood which varies with beta
-      min.f <- function(beta_) {
+      ## Maximization step for sigma^2
+      E_V2sum = Reduce('+', E_V2)
+
+      sigSq = (
+        norm(Xc, 'F')^2 -
+        2*sum(vapply(1:n, function(n_) E_V1[n_,] %*% t(W) %*% Xc[n_,], numeric(1))) +
+        sum(vapply(1:d, function(d_) W[d_,] %*% E_V2sum %*% W[d_,], numeric(1)))
+      )/(n*d)
+      sigSq = max(0, sigSq)
+
+      ##################
+      ## EM for W
+      ##################
+
+      ## Expectation Step
+      WtW = crossprod(W)
+      if (all(WtW==0)) {stop(paste("SPCA has failed due to numerical instability.",
+        "Try dividing X by it's largest singular value to improve numerical",
+        "stability"))}
+      Minv = chol2inv(chol(WtW + sigSq*diag(k)))
+      E_V1 = Xc %*% W %*% Minv
+      E_V2 = lapply(1:n, function(i_) sigSq*Minv + tcrossprod(E_V1[i_,]))
+
+      ## Maximization step for W
+      xvsum = Reduce('+', lapply(1:n, function(i_) tcrossprod(Xc[i_,], E_V1[i_,])))
+      vvsum.eig = eigen(Reduce('+', E_V2), symmetric=TRUE)
+      vvsuminv.eig = list(values=rev(1/vvsum.eig$values),
+                          vectors=vvsum.eig$vectors[,k:1])
+
+      C.tilde  = (K %*% xvsum %*% vvsuminv.eig$vectors %*%
+                  diag(vvsuminv.eig$values, ncol=k, nrow=k))
+
+      ## I have been unable to speed this up by doing Kc <- Cholesky(K) and
+      ## calculating each W.tilde_i with a diagonal update to Kc. Using updown
+      ## gives the correct answer but is MUCH slower and using update gives the
+      ## wrong answer.
+      W.tilde = vapply(1:k, function(i_) {
+        if (is(K, "sparseMatrix")) {
+          Kc = Cholesky(K, Imult=sigSq*vvsuminv.eig$values[i_], LDL=TRUE, perm=TRUE)
+          return(as.vector(Matrix::solve(Kc, C.tilde[,i_], system="A")))
+        } else {
+          KplusDiag       = K
+          diag(KplusDiag) = diag(KplusDiag) + sigSq*vvsuminv.eig$values[i_]
+          return(as.vector(Matrix::solve(KplusDiag, C.tilde[,i_])))
+        }
+      }, numeric(d))
+      W = W.tilde %*% t(vvsuminv.eig$vectors)
+
+      ####################################
+      ## Convergence criteria & printouts if trace > 0
+      ####################################
+      lpNew = prca.log_posterior(X, K, W, mu, sigSq)
+      if (iteration >= maxit) { # Check for maximum iterations reached. If so, print.
+        if (trace>0) {
+          print(paste("Convergence criteria reached:", iteration, "iterations"))
+        }
+        innerConverged=TRUE
+      } else if (trace==1 && (iteration%%report_iter)==0) {
+        print(paste("Iteration ", iteration, ": log likelihood = ",
+                    round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
+      }
+
+      lp = lpNew
+      iteration = iteration + 1
+      lps[iteration] = lp
+    } # end 'innerConverged' loop
+
+    ########################
+    ## Tune Hyperparameters
+    ########################
+    outerConverged = (outerIteration>=maxit.outer)
+    if (!outerConverged & (length(beta0) > 0)) { # There are HPs to tune
+      evidence = prca.log_evidence(X, K, W, mu, sigSq)
+      if (trace>=1) {
+        print(paste("Outer iteration ", outerIteration, ": log evidence=",
+                    round(evidence, 4), sep=''))
+      }
+
+      min.f = function(beta_) {
         K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-        if (any(is.nan(K_@x))) {
-          #print(paste(paste(beta_, collapse=', '), ": NaN"))
-          print("leak?")
-          browser()
-          return(NaN)
-        }
-        #print(paste(paste(beta_, collapse=', '), ":", -prca.log_prior(K_, W)))
-        return(-prca.log_prior(K_, W))
+        if (any(is.na(K_@x)) | any(is.nan(K_@x)) | any(is.infinite(K_@x))) { browser() }
+        return(prca.log_evidence(X, K_, W, mu, sigSq))
       }
-
-      if (is.function(covar.fn.d)) {
-        stop("Gradients not yet implemented!")
-        min.f.d <- function(beta_) {
-          K_  = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-          dK_ = covar.fn.d(locations, beta=beta_, D=D, max.dist=max.dist)
-
-          deriv = numeric(length(beta_))
-          if (is(K_, "sparseMatrix")) {
-            K_c  = Cholesky(K_, LDL=TRUE, pivot=TRUE)
-            for (i in 1:length(beta_)) {
-              # Tr[ K^-1 dK/dBeta ]
-              working1 = k * sum(diag(solve(K_c, dK_[[i]], system="A")))
-
-              # K^-1 W
-              working2 = solve(K_c, W, system="A")
-
-              # Tr[ W^T K^-1 dK/dBeta K^-1 K^-1 W ]
-              working3 = sum(vapply(1:k, function(k_) {
-                as.numeric(working2[,k_] %*% dK_[[i]] %*% working2[,k_])
-              }, numeric(1)))
-
-              deriv[i] = 0.5*(working1 - working3)
-            }
-          } else { # Non-sparse K case
-            K_ = Matrix(K_)
-            for (i in 1:length(beta_)) {
-              # Meanings as above
-              working1 = k * sum(diag(solve(K_, dK_[[i]])))
-              working2 = solve(K_, W)
-              working3 = sum(vapply(1:k, function(k_) {
-                as.numeric(working2[,k_] %*% dK_[[i]] %*% working2[,k_])
-              }, numeric(1)))
-              deriv[i] = 0.5*(working1 - working3)
-            }
-          }
-          return(deriv)
-        }
-
-        #TODO Combine f and df into fdf
-        Minit = multimin.init(beta, f=min.f, df=min.f.d, method="Nelder-Mead",
-                              step.size=0.5)
-        beta.opt = multimin.iterate(Minit)
-
-      } else {
-        #beta.opt = ucminf(par=beta, fn=min.f)
-        min.f = function(beta_) {
-          K_ = covar.fn(locations, beta=beta_, D=D, max.dist=max.dist)
-          if (any(is.na(K_@x)) | any(is.nan(K_@x)) | any(is.infinite(K_@x))) { browser() }
-          return(prca.log_evidence(X, K_, W, mu, sigSq))
-        }
-        optObj = optimx(par=beta, fn=min.f, method="Nelder-Mead", control=list(
-          kkt=FALSE, starttests=FALSE, usenumDeriv=TRUE, all.methods=FALSE,
-          maximize=TRUE, trace=0, dowarn=FALSE
-        ))
-        print(optObj$value - oldEv)
-        oldEv = optObj$value
-
-        beta.opt = list(x=as.numeric(coef(optObj)))
-      }
-
-      # TODO: Relative tolerance = relative change in LL from updating W? (Maybe lower-bounded by ~1e6)
-      #beta     = beta.opt$par # ucminf
-      #beta     = as.numeric(coef(beta.opt)) # optimx
-
-      beta = beta.opt$x #multimin
+      optObj = optimx(par=beta, fn=min.f, method="Nelder-Mead", control=list(
+        kkt=FALSE, starttests=FALSE, usenumDeriv=TRUE, all.methods=FALSE,
+        maximize=TRUE, trace=0, dowarn=FALSE
+      ))
+      beta = coef(optObj)
       K    = covar.fn(locations, beta=beta, D=D, max.dist=max.dist)
 
-      if(any(is.na(K@x)) | any(is.nan(K@x)) | any(is.infinite(K@x))) browser()
+      if (trace>=1) { print(paste("  New beta:", paste(beta, collapse=','))) }
+      outerIteration = outerIteration+1
     }
-
-    ####################################
-    ## Convergence criteria & printouts if trace > 0
-    ####################################
-    lpNew = prca.log_posterior(X, K, W, mu, sigSq)
-    if (iteration >= maxit) { # Check for maximum iterations reached. If so, print.
-      if (trace>0) {
-        print(paste("Convergence criteria reached:", iteration, "iterations"))
-      }
-      converged=TRUE
-    } else if (trace==1 && (iteration%%report_iter)==0) {
-      print(paste("Iteration ", iteration, ": log likelihood = ",
-                  round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
-    } else if (trace==2 && (iteration%%report_iter)==0) {
-      print(paste("Iteration ", iteration, ": log likelihood = ",
-                  round(lpNew, 4), " (increase=", round(lpNew-lp, 4),")", sep=''))
-      print(paste("    beta=[", paste(beta, collapse=', '), ']', sep=''))
-    }
-
-    lp = lpNew
-    iteration = iteration + 1
-    lps[iteration] = lp
-  }
+  } # end 'outerConverged' loop
 
   if (iteration < maxit) { # Trim unused lps entries
     lps = lps[1:iteration]
